@@ -19,7 +19,12 @@ final class OverlayInstruction: NSObject, AVVideoCompositionInstructionProtocol,
         self.screenTrackID = screenTrackID
         self.cameraTrackID = cameraTrackID
         self.state = state
-        requiredSourceTrackIDs = ([screenTrackID] + (cameraTrackID.map { [$0] } ?? [])).map { NSNumber(value: $0) }
+        let tracks: [CMPersistentTrackID?] = switch state.layer {
+        case .composed: [screenTrackID, cameraTrackID]
+        case .screen: [screenTrackID]
+        case .camera: [cameraTrackID]
+        }
+        requiredSourceTrackIDs = tracks.compactMap { $0 }.map { NSNumber(value: $0) }
     }
 }
 

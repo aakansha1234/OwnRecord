@@ -1,6 +1,16 @@
 import CoreImage
 import CoreImage.CIFilterBuiltins
 
+/// What a render produces: the finished frame, or one source on its own (for editing elsewhere).
+enum RenderLayer: Sendable {
+    /// Screen, camera, background and subtitles, as in the preview.
+    case composed
+    /// Only the screen (blurs and subtitles included), filling the frame. Black where it's hidden.
+    case screen
+    /// Only the camera, filling the frame. Black where it's hidden.
+    case camera
+}
+
 /// Snapshot of everything the compositor needs to draw a frame.
 struct RenderState {
     var edit: EditSettings
@@ -11,6 +21,7 @@ struct RenderState {
     var hasCamera: Bool
     /// Use Lanczos downscaling (slower, sharper text). Enabled for exports.
     var highQuality: Bool
+    var layer = RenderLayer.composed
 }
 
 /// Composes screen, camera and subtitles into one frame with Core Image.
@@ -22,11 +33,33 @@ enum FrameRenderer {
                                          timeline: state.timeline)
         let bounds = CGRect(origin: .zero, size: canvas)
         let minSide = min(canvas.width, canvas.height)
+        let redactions = state.edit.section(at: sourceTime).redactions
+
+        switch state.layer {
+        case .composed:
+            break
+        case .screen:
+            var output = CIImage(color: .black).cropped(to: bounds)
+            if let screen, layout.screenOpacity > 0.001 {
+                let content = place(redacted(screen, redactions), in: bounds, highQuality: state.highQuality)
+                output = faded(content, layout.screenOpacity).composited(over: output)
+            }
+            return subtitled(output, at: sourceTime, layout: layout, state: state).cropped(to: bounds)
+        case .camera:
+            var output = CIImage(color: .black).cropped(to: bounds)
+            if let camera, let frame = layout.camera, frame.opacity > 0.001 {
+                var feed = aspectFillCrop(camera, to: canvas)
+                if state.edit.camera.mirror { feed = mirrored(feed) }
+                output = faded(place(feed, in: bounds, highQuality: state.highQuality), frame.opacity).composited(over: output)
+            }
+            return output.cropped(to: bounds)
+        }
+
         var output = background(state.edit.layout.background, canvas: canvas)
 
         if let screen, layout.screenOpacity > 0.001 {
             let target = flipped(layout.screenRect, canvasHeight: canvas.height)
-            var content = place(screen, in: target, highQuality: state.highQuality)
+            var content = place(redacted(screen, redactions), in: target, highQuality: state.highQuality)
             if layout.screenCornerRadius > 0.5 {
                 content = masked(content, rect: target, radius: layout.screenCornerRadius)
             }
@@ -63,18 +96,49 @@ enum FrameRenderer {
             output = faded(overlay, frame.opacity).composited(over: output)
         }
 
-        if state.edit.subtitles.isEnabled,
-           let cue = state.cues.first(where: { sourceTime >= $0.start && sourceTime < $0.end }),
-           let text = SubtitleRenderer.shared.image(text: cue.text, style: state.edit.subtitles,
-                                                    fontSize: layout.subtitleFontSize, maxWidth: layout.subtitleMaxWidth) {
-            let x = ((canvas.width - text.extent.width) / 2).rounded()
-            let y = state.edit.subtitles.position == .bottom
-                ? layout.subtitleMargin
-                : canvas.height - layout.subtitleMargin - text.extent.height
-            output = text.transformed(by: CGAffineTransform(translationX: x, y: y.rounded())).composited(over: output)
-        }
+        return subtitled(output, at: sourceTime, layout: layout, state: state).cropped(to: bounds)
+    }
 
-        return output.cropped(to: bounds)
+    /// Draws the subtitle playing at `sourceTime` over `image`, if subtitles are on.
+    private static func subtitled(_ image: CIImage, at sourceTime: Double, layout: CanvasLayout, state: RenderState) -> CIImage {
+        guard state.edit.subtitles.isEnabled,
+              let cue = state.cues.first(where: { sourceTime >= $0.start && sourceTime < $0.end }),
+              let text = SubtitleRenderer.shared.image(text: cue.text, style: state.edit.subtitles,
+                                                       fontSize: layout.subtitleFontSize, maxWidth: layout.subtitleMaxWidth)
+        else { return image }
+        let canvas = layout.canvas
+        let x = ((canvas.width - text.extent.width) / 2).rounded()
+        let y = state.edit.subtitles.position == .bottom
+            ? layout.subtitleMargin
+            : canvas.height - layout.subtitleMargin - text.extent.height
+        return text.transformed(by: CGAffineTransform(translationX: x, y: y.rounded())).composited(over: image)
+    }
+
+    /// Blurs or pixelates the given areas of a screen frame. Each area only samples its own
+    /// pixels, so nothing around it bleeds in or out.
+    static func redacted(_ image: CIImage, _ redactions: [Redaction]) -> CIImage {
+        let extent = image.extent
+        guard !redactions.isEmpty, extent.width > 0, extent.height > 0 else { return image }
+        let shortSide = min(extent.width, extent.height)
+        var output = image
+        for redaction in redactions {
+            let rect = redaction.pixelRect(in: extent.size).offsetBy(dx: extent.minX, dy: extent.minY).intersection(extent)
+            guard !rect.isEmpty else { continue }
+            let region = output.cropped(to: rect).clampedToExtent()
+            let hidden: CIImage
+            switch redaction.style {
+            case .blur:
+                // Strong enough to make text of any size unreadable.
+                hidden = region.applyingGaussianBlur(sigma: Double(max(6, shortSide * 0.012)))
+            case .pixelate:
+                hidden = region.applyingFilter("CIPixellate", parameters: [
+                    kCIInputCenterKey: CIVector(x: rect.minX, y: rect.minY),
+                    kCIInputScaleKey: max(8, shortSide * 0.022),
+                ])
+            }
+            output = hidden.cropped(to: rect).composited(over: output)
+        }
+        return output
     }
 
     // MARK: Helpers

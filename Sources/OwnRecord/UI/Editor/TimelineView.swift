@@ -15,6 +15,9 @@ struct TimelineView: View {
                 ZStack(alignment: .topLeading) {
                     filmstrip(width: width)
                     sectionsOverlay(width: width)
+                    if model.isSilenceSheetPresented {
+                        pausesPreview(width: width)
+                    }
                     trimOverlay(width: width)
                     if let cues = model.recording.transcript?.cues, !cues.isEmpty {
                         cueLane(cues: cues, width: width)
@@ -99,6 +102,22 @@ struct TimelineView: View {
         }
         .frame(width: width, height: stripHeight, alignment: .topLeading)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    /// The pauses "Split at Silences" would cut, while its sheet is open.
+    private func pausesPreview(width: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(model.silencePauses.enumerated()), id: \.offset) { _, pause in
+                let start = x(pause.lowerBound, width: width)
+                Rectangle()
+                    .fill(Color.orange.opacity(0.55))
+                    .frame(width: max(1, x(pause.upperBound, width: width) - start), height: stripHeight)
+                    .offset(x: start)
+            }
+        }
+        .frame(width: width, height: stripHeight, alignment: .topLeading)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .allowsHitTesting(false)
     }
 
     private func trimOverlay(width: CGFloat) -> some View {
@@ -261,6 +280,7 @@ private struct SectionBlock: View {
                     .padding(.vertical, 5)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
         .contentShape(Rectangle())
         .help(help)
@@ -271,6 +291,7 @@ private struct SectionBlock: View {
         if !section.showsScreen { symbols.append("rectangle.slash") }
         if showsCameraBadge, !section.showsCamera { symbols.append("video.slash") }
         if showsAudioBadge, section.mutesAudio { symbols.append("speaker.slash") }
+        if !section.redactions.isEmpty { symbols.append("eye.slash") }
         return symbols
     }
 
@@ -280,6 +301,9 @@ private struct SectionBlock: View {
         if !section.showsScreen { parts.append("screen hidden") }
         if showsCameraBadge, !section.showsCamera { parts.append("camera hidden") }
         if showsAudioBadge, section.mutesAudio { parts.append("muted") }
+        if !section.redactions.isEmpty {
+            parts.append(section.redactions.count == 1 ? "1 blurred area" : "\(section.redactions.count) blurred areas")
+        }
         return parts.isEmpty ? "Right-click for section options" : parts.joined(separator: ", ").capitalizedFirst
     }
 }

@@ -105,13 +105,14 @@ enum CompositionBuilder {
     }
 
     static func videoComposition(for result: Result, recording: Recording, renderSize: CGSize,
-                                 highQuality: Bool) -> AVMutableVideoComposition {
+                                 highQuality: Bool, layer: RenderLayer = .composed) -> AVMutableVideoComposition {
         let state = RenderState(edit: recording.edit,
                                 cues: recording.transcript?.cues ?? [],
                                 timeline: result.timeline,
                                 sourceSize: result.sourceSize,
                                 hasCamera: result.cameraTrackID != nil,
-                                highQuality: highQuality)
+                                highQuality: highQuality,
+                                layer: layer)
         let instruction = OverlayInstruction(timeRange: CMTimeRange(start: .zero, duration: result.composition.duration),
                                              screenTrackID: result.screenTrackID,
                                              cameraTrackID: result.cameraTrackID,

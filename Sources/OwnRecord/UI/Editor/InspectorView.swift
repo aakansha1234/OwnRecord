@@ -19,6 +19,7 @@ struct InspectorView: View {
                     switch model.inspectorTab {
                     case .layout: LayoutInspector(model: model)
                     case .camera: CameraInspector(model: model)
+                    case .blur: BlurInspector(model: model)
                     case .subtitles: SubtitlesInspector(model: model)
                     case .audio: AudioInspector(model: model)
                     }
@@ -367,6 +368,120 @@ private struct SectionScopeNote: View {
                 .help("Use this section's camera shape, position and size in every section")
                 .controlSize(.small)
         }
+    }
+}
+
+// MARK: - Blur
+
+private struct BlurInspector: View {
+    @Bindable var model: EditorModel
+
+    var body: some View {
+        let section = model.currentSection
+        Text("Hide passwords, emails, notifications or customer data. Drag over an area in the preview to blur or pixelate it.")
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 8) {
+            ForEach(RedactionStyle.allCases) { style in
+                let command: EditorCommand = style == .blur ? .blurArea : .pixelateArea
+                Button {
+                    model.beginRedaction(style)
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: style.symbol).font(.system(size: 18))
+                        Text("\(style.title) Area").font(.system(size: 10, weight: .medium))
+                        Text(command.shortcutLabel ?? "")
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(model.drawingRedaction == style
+                                                                     ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.04)))
+                    .foregroundStyle(model.drawingRedaction == style ? Color.accentColor : .primary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!model.canRedact || model.loadState != .ready)
+                .help("\(style.title) an area (\(command.shortcutLabel ?? ""))")
+            }
+        }
+
+        InspectorSection(model.hasMultipleSections ? "In this section" : "Areas") {
+            if section.isDeleted {
+                note("This section is deleted.")
+            } else if !section.showsScreen {
+                note("The screen is hidden in this section, so there's nothing to blur.")
+            } else if model.currentRedactions.isEmpty {
+                note(model.hasMultipleSections
+                     ? "Nothing is blurred in section \(model.currentSectionIndex + 1) of \(model.sections.count). Areas apply to the section they're added in; use Apply to All Sections to hide something for the whole video."
+                     : "Nothing is blurred yet. Areas you add stay in place for the whole video, and follow along when you split it.")
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(Array(model.currentRedactions.enumerated()), id: \.element.id) { index, redaction in
+                        RedactionRow(model: model, redaction: redaction, number: index + 1)
+                    }
+                }
+                Text("Drag an area to move it, or its corners to resize. ⌫ deletes the selected area.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct RedactionRow: View {
+    @Bindable var model: EditorModel
+    let redaction: Redaction
+    let number: Int
+
+    var body: some View {
+        let selected = model.selectedRedaction?.id == redaction.id
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: redaction.style.symbol)
+                    .foregroundStyle(selected ? Color.accentColor : .secondary)
+                    .frame(width: 18)
+                Text("\(redaction.style.noun) \(number)")
+                    .font(.system(size: 12, weight: .medium))
+                Spacer()
+                Picker("Style", selection: Binding(get: { redaction.style },
+                                                   set: { model.setRedactionStyle($0, for: redaction.id) })) {
+                    ForEach(RedactionStyle.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+                Button {
+                    model.deleteRedaction(redaction.id)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Delete this area")
+                .accessibilityLabel("Delete \(redaction.style.noun) \(number)")
+            }
+            if model.hasMultipleSections, !model.redactionIsInAllSections(redaction) {
+                Button("Apply to All Sections") { model.applyRedactionToAllSections(redaction.id) }
+                    .controlSize(.small)
+                    .help("Hide this area in every section of the video")
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? Color.accentColor.opacity(0.6) : .clear))
+        .contentShape(Rectangle())
+        .onTapGesture { model.selectRedaction(redaction.id) }
     }
 }
 

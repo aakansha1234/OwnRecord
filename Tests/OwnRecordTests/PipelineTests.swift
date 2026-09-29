@@ -73,7 +73,35 @@ import Testing
         return (recording, files)
     }
 
-    private static func pixel(_ image: CGImage, x: Int, y: Int) -> (r: Int, g: Int, b: Int) {
+    /// A recording whose screen movie also has a microphone track: 0.6 s of tone, 0.9 s of silence,
+    /// then tone until the end.
+    static func makeRecordingWithMicrophone(folder: URL) async throws -> (Recording, RecordingFiles) {
+        var (recording, files) = try await makeRecording(folder: folder)
+        let tone = folder.appendingPathComponent("tone.m4a")
+        try SilenceTests.writeTone(to: tone, segments: [(0.6, 0.3), (0.9, 0), (0.5, 0.3)])
+
+        let composition = AVMutableComposition()
+        let screen = AVURLAsset(url: files.screen)
+        let audio = AVURLAsset(url: tone)
+        let video = try #require(try await screen.loadTracks(withMediaType: .video).first)
+        let sound = try #require(try await audio.loadTracks(withMediaType: .audio).first)
+        let range = CMTimeRange(start: .zero, duration: CMTime(seconds: 2, preferredTimescale: 600))
+        try composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)?
+            .insertTimeRange(range, of: video, at: .zero)
+        try composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)?
+            .insertTimeRange(range, of: sound, at: .zero)
+        let combined = folder.appendingPathComponent("combined.mov")
+        let session = try #require(AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough))
+        try await session.export(to: combined, as: .mov)
+        try FileManager.default.removeItem(at: files.screen)
+        try FileManager.default.moveItem(at: combined, to: files.screen)
+        try? FileManager.default.removeItem(at: tone)
+
+        recording.audioTracks = [.microphone]
+        return (recording, files)
+    }
+
+    static func pixel(_ image: CGImage, x: Int, y: Int) -> (r: Int, g: Int, b: Int) {
         var data = [UInt8](repeating: 0, count: 4)
         let context = CGContext(data: &data, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
                                 space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -183,5 +211,81 @@ import Testing
         let last = try #require(await Thumbnailer.image(from: asset, at: 1.25, maxSize: size))
         let camera = Self.pixel(last, x: 40, y: 40)
         #expect(camera.g > 200 && camera.r < 80)
+    }
+
+    @Test func exportsLinedUpClipsForIMovie() async throws {
+        let folder = try Self.makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var (recording, files) = try await Self.makeRecordingWithMicrophone(folder: folder)
+        // Kept: 0–0.5 as recorded, 1–1.5 without the camera, 1.5–2 without the screen.
+        for time in [0.5, 1, 1.5] { recording.edit.split(at: time, duration: 2) }
+        recording.edit.sections[1].isDeleted = true
+        recording.edit.sections[2].showsCamera = false
+        recording.edit.sections[3].showsScreen = false
+        recording.edit.sections[0].redactions = [Redaction(rect: CGRect(x: 0.5, y: 0.5, width: 0.2, height: 0.2))]
+        recording.transcript = nil
+
+        var options = ExportOptions()
+        options.format = .imovie
+        options.iMovieClips = .both
+        options.resolution = .original
+        let output = folder.appendingPathComponent("Test for iMovie")
+        let clips = try await IMovieExporter.export(recording: recording, files: files, options: options, to: output) { _ in }
+        #expect(clips.map(\.kind) == [.finished, .screen, .camera])
+        #expect(clips.map(\.url.lastPathComponent) == ["Test.mov", "Test – Screen.mov", "Test – Camera.mov"])
+
+        func check(_ kind: ExportedClip.Kind, size: CGSize, audioTracks: Int) async throws -> AVURLAsset {
+            let asset = AVURLAsset(url: try #require(clips.first { $0.kind == kind }).url)
+            #expect(abs(try await asset.load(.duration).seconds - 1.5) < 0.1, "\(kind)")
+            let track = try #require(try await asset.loadTracks(withMediaType: .video).first)
+            #expect(try await track.load(.naturalSize) == size, "\(kind)")
+            #expect(try await asset.loadTracks(withMediaType: .audio).count == audioTracks, "\(kind)")
+            return asset
+        }
+        _ = try await check(.finished, size: CGSize(width: 640, height: 400), audioTracks: 1)
+        let screen = try await check(.screen, size: CGSize(width: 640, height: 400), audioTracks: 1)
+        let camera = try await check(.camera, size: CGSize(width: 320, height: 240), audioTracks: 0)
+
+        func color(_ asset: AVAsset, at time: Double, size: CGSize) async throws -> (r: Int, g: Int, b: Int) {
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.requestedTimeToleranceBefore = .zero
+            generator.requestedTimeToleranceAfter = .zero
+            let image = try await generator.image(at: time.cmTime).image
+            return Self.pixel(image, x: 20, y: 20)
+        }
+        let screenSize = CGSize(width: 640, height: 400), cameraSize = CGSize(width: 320, height: 240)
+        // The screen clip shows the screen (no camera, no background) and goes black where it's hidden.
+        let red = try await color(screen, at: 0.25, size: screenSize)
+        #expect(red.r > 200 && red.g < 60)
+        let screenWithoutCamera = try await color(screen, at: 0.95, size: screenSize)
+        #expect(screenWithoutCamera.r > 200)
+        let hiddenScreen = try await color(screen, at: 1.45, size: screenSize)
+        #expect(hiddenScreen.r < 30 && hiddenScreen.g < 30)
+        // The camera clip goes black where the camera is hidden, and lines up with the screen clip.
+        let green = try await color(camera, at: 0.25, size: cameraSize)
+        #expect(green.g > 200 && green.r < 80)
+        let hiddenCamera = try await color(camera, at: 0.95, size: cameraSize)
+        #expect(hiddenCamera.g < 30)
+        let cameraAgain = try await color(camera, at: 1.45, size: cameraSize)
+        #expect(cameraAgain.g > 200)
+    }
+
+    @Test func iMovieExportFallsBackToTheFinishedVideoWithoutCamera() async throws {
+        let folder = try Self.makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let (recording, files) = try await Self.makeRecording(folder: folder)
+        try FileManager.default.removeItem(at: files.camera)
+
+        var options = ExportOptions()
+        options.format = .imovie
+        options.iMovieClips = .separate
+        let output = folder.appendingPathComponent("Out")
+        // Something that was there before stays.
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let other = output.appendingPathComponent("notes.txt")
+        try Data("keep".utf8).write(to: other)
+        let clips = try await IMovieExporter.export(recording: recording, files: files, options: options, to: output) { _ in }
+        #expect(clips.map(\.kind) == [.finished])
+        #expect(FileManager.default.fileExists(atPath: other.path))
     }
 }

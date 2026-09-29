@@ -55,6 +55,17 @@ final class Preferences {
     var cameraStyle: CameraOverlayStyle { didSet { store(cameraStyle, forKey: "cameraStyle") } }
     var bubbleSize: BubbleSize { didSet { defaults.set(bubbleSize.rawValue, forKey: "bubbleSize") } }
 
+    // Teleprompter
+    /// The script shown in the teleprompter.
+    var speakerNotes: String { didSet { defaults.set(speakerNotes, forKey: "speakerNotes") } }
+    /// Scroll speed, 1...10.
+    var teleprompterSpeed: Double { didSet { defaults.set(teleprompterSpeed, forKey: "teleprompterSpeed") } }
+    var teleprompterFontSize: Double { didSet { defaults.set(teleprompterFontSize, forKey: "teleprompterFontSize") } }
+    /// Start scrolling when a recording starts (and pause with it).
+    var teleprompterFollowsRecording: Bool {
+        didSet { defaults.set(teleprompterFollowsRecording, forKey: "teleprompterFollowsRecording") }
+    }
+
     // Recorder selections
     var captureMode: CaptureMode { didSet { defaults.set(captureMode.rawValue, forKey: "captureMode") } }
     var cameraID: String? { didSet { defaults.set(cameraID ?? "", forKey: "cameraID") } }
@@ -74,6 +85,9 @@ final class Preferences {
             "openEditorAfterRecording": true,
             "autoTranscribe": true,
             "captureSystemAudio": true,
+            "teleprompterSpeed": 5.0,
+            "teleprompterFontSize": 30.0,
+            "teleprompterFollowsRecording": true,
         ])
         frameRate = d.integer(forKey: "frameRate")
         countdown = d.integer(forKey: "countdown")
@@ -87,6 +101,10 @@ final class Preferences {
             ?? TranscriptionEngine.defaultLocaleIdentifier()
         cameraStyle = Self.load(CameraOverlayStyle.self, from: d, key: "cameraStyle") ?? CameraOverlayStyle()
         bubbleSize = BubbleSize(rawValue: d.string(forKey: "bubbleSize") ?? "") ?? .medium
+        speakerNotes = d.string(forKey: "speakerNotes") ?? ""
+        teleprompterSpeed = d.double(forKey: "teleprompterSpeed")
+        teleprompterFontSize = d.double(forKey: "teleprompterFontSize")
+        teleprompterFollowsRecording = d.bool(forKey: "teleprompterFollowsRecording")
         captureMode = CaptureMode(rawValue: d.string(forKey: "captureMode") ?? "") ?? .display
         cameraID = d.string(forKey: "cameraID").flatMap { $0.isEmpty ? nil : $0 }
         // First launch: default to the system microphone. Afterwards "" means "no microphone".

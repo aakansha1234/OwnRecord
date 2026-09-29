@@ -10,12 +10,15 @@ final class AppModel {
     let library = RecordingLibrary()
     let recorder: RecorderModel
     let windows = WindowCoordinator()
+    let teleprompter: Teleprompter
     private(set) var recording: RecordingController!
 
     private init() {
         recorder = RecorderModel(preferences: preferences)
+        teleprompter = Teleprompter(preferences: preferences)
         recording = RecordingController(app: self)
         recorder.onDevicesChanged = { [weak self] in self?.recording.updateDevices() }
+        teleprompter.follow(recording)
     }
 
     /// Opens the recorder panel (source, camera and mic selection).

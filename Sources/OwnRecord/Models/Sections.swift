@@ -24,6 +24,8 @@ struct TimelineSection: Codable, Hashable, Identifiable {
     var mutesAudio = false
     /// nil uses the recording-wide placement from `CameraOverlayStyle`.
     var camera: CameraPlacement?
+    /// Blurred or pixelated areas of the screen.
+    var redactions: [Redaction] = []
 
     init(start: Double) {
         self.start = start
@@ -38,6 +40,7 @@ struct TimelineSection: Codable, Hashable, Identifiable {
         showsCamera = try container.decodeIfPresent(Bool.self, forKey: .showsCamera) ?? true
         mutesAudio = try container.decodeIfPresent(Bool.self, forKey: .mutesAudio) ?? false
         camera = try container.decodeIfPresent(CameraPlacement.self, forKey: .camera)
+        redactions = try container.decodeIfPresent([Redaction].self, forKey: .redactions) ?? []
     }
 
     /// Whether the section changes anything besides being a separate piece.
@@ -134,11 +137,14 @@ extension EditSettings {
     }
 
     /// Removes the split between section `index` and the next one. The first section's
-    /// settings apply to the joined section.
+    /// settings apply to the joined section, but blurred areas of both are kept (so nothing
+    /// private shows up again).
     @discardableResult
     mutating func joinSection(at index: Int) -> Bool {
         guard sections.indices.contains(index), index + 1 < sections.count else { return false }
-        sections.remove(at: index + 1)
+        let removed = sections.remove(at: index + 1)
+        let ids = Set(sections[index].redactions.map(\.id))
+        sections[index].redactions += removed.redactions.filter { !ids.contains($0.id) }
         return true
     }
 
@@ -154,7 +160,8 @@ extension EditSettings {
     }
 }
 
-private extension Range where Bound == Double {
+extension Range where Bound == Double {
+    /// The part of the range inside `limits` (empty, at the nearest limit, if they don't overlap).
     func clamped(to limits: Range<Double>) -> Range<Double> {
         let lower = Swift.min(Swift.max(lowerBound, limits.lowerBound), limits.upperBound)
         let upper = Swift.min(Swift.max(upperBound, lower), limits.upperBound)

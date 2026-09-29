@@ -14,6 +14,7 @@ final class HotKeyCenter {
 
     static let toggleRecording = Shortcut(keyCode: kVK_ANSI_R, modifiers: [.command, .shift, .option], display: "⌥⇧⌘R")
     static let togglePause = Shortcut(keyCode: kVK_ANSI_P, modifiers: [.command, .shift, .option], display: "⌥⇧⌘P")
+    static let toggleTeleprompter = Shortcut(keyCode: kVK_ANSI_T, modifiers: [.command, .shift, .option], display: "⌥⇧⌘T")
 
     private var handlers: [UInt32: () -> Void] = [:]
     private var references: [UInt32: EventHotKeyRef] = [:]

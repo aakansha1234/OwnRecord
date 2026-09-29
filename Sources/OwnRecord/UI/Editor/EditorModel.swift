@@ -14,11 +14,13 @@ final class EditorModel {
     }
 
     enum ExportState: Equatable {
-        case idle, running(Double), finished(URL), failed(String)
+        case idle, running(Double), failed(String)
+        /// `clips` lists the clips of an iMovie export (`url` is their folder).
+        case finished(URL, clips: [ExportedClip])
     }
 
     enum InspectorTab: String, CaseIterable, Identifiable {
-        case layout, camera, subtitles, audio
+        case layout, camera, blur, subtitles, audio
 
         var id: String { rawValue }
         var title: String { rawValue.capitalized }
@@ -27,6 +29,7 @@ final class EditorModel {
             switch self {
             case .layout: "rectangle.inset.filled"
             case .camera: "person.crop.circle"
+            case .blur: "eye.slash"
             case .subtitles: "captions.bubble"
             case .audio: "speaker.wave.2"
             }
@@ -41,7 +44,15 @@ final class EditorModel {
     let player = AVPlayer()
 
     private(set) var loadState: LoadState = .loading
-    private(set) var currentTime: Double = 0
+    private(set) var currentTime: Double = 0 {
+        didSet {
+            // Blur selection and drawing belong to the section at the playhead; other sections can
+            // have copies of the same area (same ID), which ⌫ must not delete unseen.
+            if recording.edit.section(at: oldValue).id != recording.edit.section(at: currentTime).id {
+                endRedactionEditing()
+            }
+        }
+    }
     private(set) var isPlaying = false
     private(set) var duration: Double = 0
     private(set) var sourceSize: CGSize = .zero
@@ -52,17 +63,27 @@ final class EditorModel {
     var inspectorTab: InspectorTab = .layout
     var isExportSheetPresented = false
     var isShortcutsPresented = false
+    var isSilenceSheetPresented = false
     var exportOptions = ExportOptions()
     var transcriptionLocale: String
     /// A short message over the preview, e.g. after moving the camera in one section.
     private(set) var hint: Hint?
     /// Maps preview-player time to recording time (deleted sections are left out).
     private(set) var previewTimeline = TimelineMap(ranges: [])
+    /// The blurred area selected in the preview (only counts while it's in the section at the playhead).
+    private(set) var selectedRedactionID: Redaction.ID?
+    /// Set while dragging out a new blurred area in the preview.
+    private(set) var drawingRedaction: RedactionStyle?
 
     struct Hint: Equatable, Identifiable {
         let id = UUID()
         var message: String
-        var offersApplyToAll = false
+        var action: HintAction?
+    }
+
+    enum HintAction: Equatable {
+        case applyCameraToAllSections
+        case applyRedactionToAllSections(Redaction.ID)
     }
 
     /// Undo for every edit. The editor window hands it to AppKit, so ⌘Z and the Edit menu work.
@@ -256,6 +277,8 @@ final class EditorModel {
             player.pause()
             return
         }
+        drawingRedaction = nil
+        selectedRedactionID = nil
         let position = previewTimeline.outputTime(forSource: currentTime)
         if currentTime < trimStart || position >= previewTimeline.outputTime(forSource: trimEnd) - 0.05 {
             seek(to: trimStart)
@@ -516,13 +539,245 @@ final class EditorModel {
 
     private func hintIfSectionOnly() {
         guard hasMultipleSections, !cameraPlacementIsUniform else { return }
-        showHint("Camera changed in this section only.", offersApplyToAll: true)
+        showHint("Camera changed in this section only.", action: .applyCameraToAllSections)
+    }
+
+    // MARK: Blur
+
+    /// Blurred and pixelated areas in the section at the playhead.
+    var currentRedactions: [Redaction] { currentSection.redactions }
+
+    var selectedRedaction: Redaction? {
+        guard canRedact else { return nil }
+        return selectedRedactionID.flatMap { id in currentRedactions.first { $0.id == id } }
+    }
+
+    /// Whether areas can be blurred in the section at the playhead (it has to show the screen).
+    var canRedact: Bool {
+        !currentSection.isDeleted && currentSection.showsScreen
+    }
+
+    /// Starts dragging out a new area to blur or pixelate in the preview.
+    func beginRedaction(_ style: RedactionStyle) {
+        guard canRedact else {
+            NSSound.beep()
+            showHint(currentSection.isDeleted ? "This section is deleted." : "The screen is hidden in this section.")
+            return
+        }
+        pauseForSeek()
+        drawingRedaction = style
+        selectedRedactionID = nil
+        inspectorTab = .blur
+        showHint("Drag over the area to \(style == .blur ? "blur" : "pixelate"). Press Esc to cancel.")
+    }
+
+    /// Adds the area dragged out after `beginRedaction`; `rect` is normalized in the screen recording.
+    func finishRedaction(rect: CGRect) {
+        guard let style = drawingRedaction else { return }
+        drawingRedaction = nil
+        let redaction = Redaction(style: style, rect: rect)
+        let index = currentSectionIndex
+        performEdit("Add \(style.noun)") { recording.edit.sections[index].redactions.append(redaction) }
+        selectedRedactionID = redaction.id
+        if hasMultipleSections {
+            showHint("\(style.noun) added to this section only.", action: .applyRedactionToAllSections(redaction.id))
+        } else {
+            dismissHint()
+        }
+    }
+
+    /// Cancels drawing a new area, or else deselects the selected one.
+    func cancelRedactionEditing() {
+        if drawingRedaction != nil {
+            drawingRedaction = nil
+            dismissHint()
+        } else {
+            selectedRedactionID = nil
+        }
+    }
+
+    var canCancelRedactionEditing: Bool { drawingRedaction != nil || selectedRedaction != nil }
+
+    private func endRedactionEditing() {
+        selectedRedactionID = nil
+        if drawingRedaction != nil {
+            drawingRedaction = nil
+            dismissHint()
+        }
+    }
+
+    func selectRedaction(_ id: Redaction.ID?) {
+        selectedRedactionID = id
+        if id != nil { inspectorTab = .blur }
+    }
+
+    /// Moves or resizes an area in the section at the playhead (drags merge into one undo step).
+    func setRedactionRect(_ rect: CGRect, for id: Redaction.ID, resizing: Bool) {
+        guard let (section, index) = redactionIndex(id) else { return }
+        let noun = recording.edit.sections[section].redactions[index].style.noun
+        performEdit(resizing ? "Resize \(noun)" : "Move \(noun)", coalescing: true) {
+            recording.edit.sections[section].redactions[index].rect = rect
+        }
+    }
+
+    func setRedactionStyle(_ style: RedactionStyle, for id: Redaction.ID) {
+        guard let (section, index) = redactionIndex(id), recording.edit.sections[section].redactions[index].style != style
+        else { return }
+        performEdit("Change to \(style.noun)") {
+            recording.edit.sections[section].redactions[index].style = style
+        }
+    }
+
+    /// Deletes an area (the selected one by default) from the section at the playhead.
+    func deleteRedaction(_ id: Redaction.ID? = nil) {
+        guard let id = id ?? selectedRedaction?.id, let (section, index) = redactionIndex(id) else { return }
+        let noun = recording.edit.sections[section].redactions[index].style.noun
+        performEdit("Delete \(noun)") { recording.edit.sections[section].redactions.remove(at: index) }
+        if selectedRedactionID == id { selectedRedactionID = nil }
+    }
+
+    /// Puts an area of the section at the playhead into every section, at the same place.
+    func applyRedactionToAllSections(_ id: Redaction.ID) {
+        guard let redaction = currentRedactions.first(where: { $0.id == id }) else { return }
+        performEdit("Apply \(redaction.style.noun) to All Sections") {
+            for section in recording.edit.sections.indices {
+                if let index = recording.edit.sections[section].redactions.firstIndex(where: { $0.id == id }) {
+                    recording.edit.sections[section].redactions[index] = redaction
+                } else {
+                    recording.edit.sections[section].redactions.append(redaction)
+                }
+            }
+        }
+        dismissHint()
+    }
+
+    /// Whether every section has this area, at the same place and style.
+    func redactionIsInAllSections(_ redaction: Redaction) -> Bool {
+        sections.allSatisfy { $0.redactions.contains(redaction) }
+    }
+
+    private func redactionIndex(_ id: Redaction.ID) -> (section: Int, index: Int)? {
+        let section = currentSectionIndex
+        guard let index = sections[section].redactions.firstIndex(where: { $0.id == id }) else { return nil }
+        return (section, index)
+    }
+
+    // MARK: Silences
+
+    enum SilenceAnalysis: Equatable {
+        case idle, analyzing, ready(AudioLevels), failed(String)
+    }
+
+    struct SilenceSettings: Equatable {
+        /// dBFS; nil uses the threshold suggested for this recording.
+        var threshold: Double?
+        var minimumDuration = 0.8
+        var padding = 0.15
+        var deletesPauses = true
+    }
+
+    private(set) var silenceAnalysis: SilenceAnalysis = .idle
+    var silenceSettings = SilenceSettings()
+    /// The track `silenceAnalysis` measured.
+    @ObservationIgnored private var analyzedTrack: AudioTrackKind?
+    @ObservationIgnored private var silenceTask: Task<Void, Never>?
+    @ObservationIgnored private var pauseCache: (key: PauseCacheKey, pauses: [Range<Double>])?
+
+    private struct PauseCacheKey: Equatable {
+        var settings: SilenceSettings
+        var threshold: Double
+        var kept: [Range<Double>]
+        var decibelCount: Int
+    }
+
+    /// The track pauses are found in: the microphone (your voice) unless it's muted in the mix.
+    var silenceTrack: AudioTrackKind? {
+        let audio = recording.edit.audio
+        if recording.hasMicrophone, audio.microphoneVolume > 0 || !recording.hasSystemAudio { return .microphone }
+        return recording.hasSystemAudio ? .system : nil
+    }
+
+    var silenceThreshold: Double {
+        get {
+            if let threshold = silenceSettings.threshold { return threshold }
+            if case .ready(let levels) = silenceAnalysis { return levels.suggestedThreshold }
+            return -50
+        }
+        set { silenceSettings.threshold = newValue }
+    }
+
+    /// Pauses found with the current settings, limited to what's in the video.
+    var silencePauses: [Range<Double>] {
+        guard case .ready(let levels) = silenceAnalysis else { return [] }
+        let key = PauseCacheKey(settings: silenceSettings, threshold: silenceThreshold,
+                                kept: recording.edit.keptRanges(duration: duration, applyingTrim: true),
+                                decibelCount: levels.decibels.count)
+        if let pauseCache, pauseCache.key == key { return pauseCache.pauses }
+        let found = levels.pauses(threshold: key.threshold, minimumDuration: silenceSettings.minimumDuration,
+                                  padding: silenceSettings.padding).map(snappedToFrames)
+        let pauses = recording.edit.pausesInVideo(found, duration: duration)
+        pauseCache = (key, pauses)
+        return pauses
+    }
+
+    func showSilenceSheet() {
+        guard recording.hasAudio else { NSSound.beep(); return }
+        pauseForSeek()
+        isSilenceSheetPresented = true
+        analyzeSilences()
+    }
+
+    private func analyzeSilences() {
+        guard let kind = silenceTrack, let trackIndex = recording.audioTracks.firstIndex(of: kind) else { return }
+        switch silenceAnalysis {
+        case .analyzing, .ready:
+            // Measured already, unless the track changed (e.g. the mic was muted in the mix).
+            if analyzedTrack == kind { return }
+        case .idle, .failed:
+            break
+        }
+        silenceTask?.cancel()
+        analyzedTrack = kind
+        silenceAnalysis = .analyzing
+        silenceSettings.threshold = nil
+        let url = files.screen
+        silenceTask = Task { [weak self] in
+            do {
+                let levels = try await SilenceDetector.levels(of: url, trackIndex: trackIndex)
+                guard !Task.isCancelled else { return }
+                self?.silenceAnalysis = .ready(levels)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.silenceAnalysis = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Splits around the pauses found with the current settings, and deletes them if chosen.
+    func cutSilences() {
+        let pauses = silencePauses
+        isSilenceSheetPresented = false
+        guard !pauses.isEmpty else { return }
+        var edit = recording.edit
+        let deleting = silenceSettings.deletesPauses
+        edit.cutPauses(pauses, deleting: deleting, duration: duration)
+        guard keepsSomething(edit, explain: true) else { NSSound.beep(); return }
+        performEdit(deleting ? "Remove Pauses" : "Split at Silences") { recording.edit = edit }
+        let total = pauses.reduce(0) { $0 + $1.upperBound - $1.lowerBound }
+        let count = pauses.count == 1 ? "1 pause" : "\(pauses.count) pauses"
+        showHint(deleting ? "Removed \(count) (\(TimeFormat.length(total))). Press ⌘Z to undo."
+                          : "Split at \(count). Press ⌫ on a section to delete it.")
+    }
+
+    private func snappedToFrames(_ range: Range<Double>) -> Range<Double> {
+        let lower = snappedToFrame(range.lowerBound)
+        return lower..<max(lower, snappedToFrame(range.upperBound))
     }
 
     // MARK: Hints
 
-    func showHint(_ message: String, offersApplyToAll: Bool = false) {
-        hint = Hint(message: message, offersApplyToAll: offersApplyToAll)
+    func showHint(_ message: String, action: HintAction? = nil) {
+        hint = Hint(message: message, action: action)
         hintTask?.cancel()
         hintTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(5))
@@ -645,6 +900,7 @@ final class EditorModel {
 
     private func recordingChanged(from old: Recording) {
         registerUndo(from: old)
+        if drawingRedaction != nil, !canRedact { endRedactionEditing() }
         let edit = recording.edit
         let rangesChanged = old.edit.keptRanges(duration: .infinity, applyingTrim: false)
             != edit.keptRanges(duration: .infinity, applyingTrim: false)
@@ -773,8 +1029,15 @@ final class EditorModel {
     func chooseDestinationAndExport() {
         let options = exportOptions
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(Self.fileName(for: recording.title)).\(options.format.fileExtension)"
-        panel.allowedContentTypes = [options.format.contentType]
+        if options.format == .imovie {
+            panel.nameFieldStringValue = "\(Self.fileName(for: recording.title)) for iMovie"
+            panel.nameFieldLabel = "Folder name:"
+            panel.message = "The clips for iMovie are saved in a folder with this name."
+            panel.prompt = "Export"
+        } else {
+            panel.nameFieldStringValue = "\(Self.fileName(for: recording.title)).\(options.format.fileExtension)"
+            panel.allowedContentTypes = [options.format.contentType]
+        }
         panel.canCreateDirectories = true
         panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -788,18 +1051,29 @@ final class EditorModel {
         let files = self.files
         export = .running(0)
         exportTask = Task { [weak self] in
-            do {
-                try await VideoExporter.export(recording: recording, files: files, options: options, to: url) { progress in
-                    Task { @MainActor in
-                        if case .running = self?.export { self?.export = .running(progress) }
-                    }
+            let progress: @Sendable (Double) -> Void = { progress in
+                Task { @MainActor in
+                    if case .running = self?.export { self?.export = .running(progress) }
                 }
+            }
+            if options.format == .imovie {
+                do {
+                    let clips = try await IMovieExporter.export(recording: recording, files: files, options: options, to: url,
+                                                                progress: progress)
+                    self?.export = .finished(url, clips: clips)
+                } catch {
+                    self?.export = error is CancellationError || Task.isCancelled ? .idle : .failed(error.localizedDescription)
+                }
+                return
+            }
+            do {
+                try await VideoExporter.export(recording: recording, files: files, options: options, to: url, progress: progress)
                 if options.includeSubtitleFile, options.format != .gif, let transcript = recording.transcript {
                     let cues = SubtitleExporter.cues(transcript.cues, timeline: recording.editedTimeline)
                     try? SubtitleExporter.string(for: cues, format: .srt)
                         .write(to: url.deletingPathExtension().appendingPathExtension("srt"), atomically: true, encoding: .utf8)
                 }
-                self?.export = .finished(url)
+                self?.export = .finished(url, clips: [])
             } catch is CancellationError {
                 try? FileManager.default.removeItem(at: url)
                 self?.export = .idle
@@ -830,6 +1104,7 @@ final class EditorModel {
         timeObserver = nil
         statusObservation = nil
         transcriptionTask?.cancel()
+        silenceTask?.cancel()
         rebuildTask?.cancel()
         hintTask?.cancel()
         saveTask?.cancel()

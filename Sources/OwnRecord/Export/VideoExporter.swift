@@ -4,16 +4,25 @@ import UniformTypeIdentifiers
 
 enum ExportFormat: String, CaseIterable, Identifiable, Codable {
     case mp4, mov, gif
+    /// A folder of clips for iMovie (see `IMovieExporter`).
+    case imovie
 
     var id: String { rawValue }
-    var title: String { rawValue.uppercased() }
-    var fileExtension: String { rawValue }
+
+    var title: String {
+        self == .imovie ? "iMovie" : rawValue.uppercased()
+    }
+
+    var fileExtension: String {
+        self == .imovie ? "" : rawValue
+    }
 
     var contentType: UTType {
         switch self {
         case .mp4: .mpeg4Movie
         case .mov: .quickTimeMovie
         case .gif: .gif
+        case .imovie: .folder
         }
     }
 }
@@ -72,6 +81,16 @@ struct ExportOptions: Codable, Hashable {
     var gifWidth: Int = 800
     var gifFrameRate: Int = 15
     var includeSubtitleFile = false
+    var iMovieClips: IMovieClips = .separate
+
+    /// The settings movies are written with. iMovie clips are H.264 MOVs, which iMovie edits smoothly.
+    var movieOptions: ExportOptions {
+        guard format == .imovie else { return self }
+        var options = self
+        options.format = .mov
+        options.codec = .h264
+        return options
+    }
 }
 
 enum VideoExporter {
@@ -116,12 +135,21 @@ enum VideoExporter {
             return
         }
 
-        let preset = options.codec == .hevc ? AVAssetExportPresetHEVCHighestQuality : AVAssetExportPresetHighestQuality
-        guard let session = AVAssetExportSession(asset: built.composition, presetName: preset) else {
+        try await writeMovie(built.composition, videoComposition: videoComposition,
+                             audioMix: CompositionBuilder.audioMix(for: built, edit: recording.edit),
+                             codec: options.codec, fileType: options.format == .mov ? .mov : .mp4, to: url, progress: progress)
+    }
+
+    /// Encodes a composition through a video composition into a movie file.
+    static func writeMovie(_ asset: AVAsset, videoComposition: AVVideoComposition, audioMix: AVAudioMix?,
+                           codec: ExportCodec, fileType: AVFileType, to url: URL,
+                           progress: @escaping @Sendable (Double) -> Void) async throws {
+        let preset = codec == .hevc ? AVAssetExportPresetHEVCHighestQuality : AVAssetExportPresetHighestQuality
+        guard let session = AVAssetExportSession(asset: asset, presetName: preset) else {
             throw CaptureError.writerSetupFailed("This export preset isn't available.")
         }
         session.videoComposition = videoComposition
-        session.audioMix = CompositionBuilder.audioMix(for: built, edit: recording.edit)
+        session.audioMix = audioMix
         session.shouldOptimizeForNetworkUse = true
 
         let monitor = Task {
@@ -132,7 +160,7 @@ enum VideoExporter {
             }
         }
         defer { monitor.cancel() }
-        try await session.export(to: url, as: options.format == .mov ? .mov : .mp4)
+        try await session.export(to: url, as: fileType)
         progress(1)
     }
 

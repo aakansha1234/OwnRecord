@@ -22,6 +22,9 @@ struct EditorView: View {
                 InspectorView(model: model)
                     .frame(width: 320)
             }
+            .sheet(isPresented: $model.isSilenceSheetPresented) {
+                SilenceSheet(model: model)
+            }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .ignoresSafeArea(edges: .top)
@@ -104,15 +107,22 @@ private struct PreviewStage: View {
                     .background(Color.black)
                     .shadow(color: .black.opacity(0.3), radius: 16, y: 6)
                     .position(x: stage.midX, y: stage.midY)
-                    .onTapGesture { endTextEditing() }
+                    .onTapGesture {
+                        endTextEditing()
+                        model.selectRedaction(nil)
+                    }
 
                 let section = model.currentSection
                 if model.loadState == .ready, section.isDeleted, !model.isPlaying {
                     DeletedSectionOverlay(model: model)
                         .frame(width: stage.width, height: stage.height)
                         .position(x: stage.midX, y: stage.midY)
-                } else if model.loadState == .ready, model.hasCameraTrack, section.showsCamera, section.showsScreen {
+                } else if model.loadState == .ready, model.hasCameraTrack, section.showsCamera, section.showsScreen,
+                          model.drawingRedaction == nil {
                     CameraDragHandle(model: model, stage: stage)
+                }
+                if model.loadState == .ready, model.canRedact, !model.isPlaying {
+                    RedactionLayer(model: model, screen: screenFrame(in: stage))
                 }
 
                 if let hint = model.hint {
@@ -138,8 +148,228 @@ private struct PreviewStage: View {
                     .position(x: geometry.size.width / 2, y: geometry.size.height - 44)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .coordinateSpace(name: "preview")
         }
         .frame(minHeight: 300)
+    }
+
+    /// Where the screen recording appears in the preview.
+    private func screenFrame(in stage: CGRect) -> CGRect {
+        let canvas = model.canvasSize
+        let scale = stage.width / max(canvas.width, 1)
+        let rect = LayoutEngine.layout(canvas: canvas, source: model.sourceSize, edit: model.recording.edit,
+                                       hasCamera: false).screenRect
+        return CGRect(x: stage.minX + rect.minX * scale, y: stage.minY + rect.minY * scale,
+                      width: rect.width * scale, height: rect.height * scale)
+    }
+}
+
+// MARK: - Blurred areas
+
+/// Outlines and handles for the blurred areas of the section at the playhead, and the surface
+/// for dragging out a new one. Coordinates are in the "preview" space.
+private struct RedactionLayer: View {
+    @Bindable var model: EditorModel
+    let screen: CGRect
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(model.currentRedactions.enumerated()), id: \.element.id) { index, redaction in
+                RedactionBox(model: model, redaction: redaction, number: index + 1, screen: screen,
+                             isSelected: model.selectedRedaction?.id == redaction.id)
+                    .allowsHitTesting(model.drawingRedaction == nil)
+            }
+            if let style = model.drawingRedaction {
+                RedactionDrawingSurface(model: model, style: style, screen: screen)
+            }
+        }
+    }
+}
+
+private struct RedactionBox: View {
+    @Bindable var model: EditorModel
+    let redaction: Redaction
+    let number: Int
+    let screen: CGRect
+    let isSelected: Bool
+    @State private var hovering = false
+    /// The area's rect when the current drag began.
+    @State private var dragStart: CGRect?
+
+    private enum Corner: CaseIterable {
+        case topLeading, topTrailing, bottomLeading, bottomTrailing
+
+        var isLeading: Bool { self == .topLeading || self == .bottomLeading }
+        var isTop: Bool { self == .topLeading || self == .topTrailing }
+
+        var pointer: FrameResizePosition {
+            switch self {
+            case .topLeading: .topLeading
+            case .topTrailing: .topTrailing
+            case .bottomLeading: .bottomLeading
+            case .bottomTrailing: .bottomTrailing
+            }
+        }
+    }
+
+    var body: some View {
+        let frame = viewRect(redaction.rect)
+        ZStack(alignment: .topLeading) {
+            Rectangle()
+                .fill(Color.white.opacity(0.001))
+                .overlay(
+                    Rectangle().strokeBorder(
+                        isSelected ? Color.accentColor : Color.white.opacity(hovering ? 0.95 : 0.55),
+                        style: StrokeStyle(lineWidth: isSelected ? 2 : 1.5, dash: isSelected ? [] : [5, 4]))
+                )
+                .shadow(color: .black.opacity(0.4), radius: 1)
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .onHover { hovering = $0 }
+                .pointerStyle(.grabIdle)
+                .gesture(
+                    DragGesture(minimumDistance: 2, coordinateSpace: .named("preview"))
+                        .onChanged { value in
+                            let start = beginDrag()
+                            var rect = start
+                            rect.origin.x += value.translation.width / screen.width
+                            rect.origin.y += value.translation.height / screen.height
+                            model.setRedactionRect(rect, for: redaction.id, resizing: false)
+                        }
+                        .onEnded { _ in dragStart = nil }
+                )
+                .onTapGesture { model.selectRedaction(redaction.id) }
+                .contextMenu { menu }
+                .help("\(redaction.style.noun) \(number). Drag to move; right-click for options.")
+                .accessibilityLabel("\(redaction.style.noun) \(number)")
+
+            if isSelected {
+                ForEach(Corner.allCases, id: \.self) { corner in
+                    handle(corner, frame: frame)
+                }
+            }
+        }
+    }
+
+    private func handle(_ corner: Corner, frame: CGRect) -> some View {
+        Rectangle()
+            .fill(Color.white)
+            .overlay(Rectangle().strokeBorder(Color.accentColor, lineWidth: 1.5))
+            .frame(width: 9, height: 9)
+            .contentShape(Rectangle().inset(by: -5))
+            .position(x: corner.isLeading ? frame.minX : frame.maxX, y: corner.isTop ? frame.minY : frame.maxY)
+            .pointerStyle(.frameResize(position: corner.pointer))
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .named("preview"))
+                    .onChanged { value in
+                        let start = beginDrag()
+                        let dx = value.translation.width / screen.width
+                        let dy = value.translation.height / screen.height
+                        let side = Redaction.minimumSide
+                        var minX = start.minX, maxX = start.maxX, minY = start.minY, maxY = start.maxY
+                        if corner.isLeading {
+                            minX = min(max(0, start.minX + dx), maxX - side)
+                        } else {
+                            maxX = max(min(1, start.maxX + dx), minX + side)
+                        }
+                        if corner.isTop {
+                            minY = min(max(0, start.minY + dy), maxY - side)
+                        } else {
+                            maxY = max(min(1, start.maxY + dy), minY + side)
+                        }
+                        model.setRedactionRect(CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY),
+                                               for: redaction.id, resizing: true)
+                    }
+                    .onEnded { _ in dragStart = nil }
+            )
+    }
+
+    @ViewBuilder private var menu: some View {
+        ForEach(RedactionStyle.allCases) { style in
+            Button(style.title) { model.setRedactionStyle(style, for: redaction.id) }
+                .disabled(redaction.style == style)
+        }
+        if model.hasMultipleSections {
+            Divider()
+            Button("Apply to All Sections") { model.applyRedactionToAllSections(redaction.id) }
+                .disabled(model.redactionIsInAllSections(redaction))
+        }
+        Divider()
+        Button("Delete \(redaction.style.noun)") { model.deleteRedaction(redaction.id) }
+    }
+
+    private func beginDrag() -> CGRect {
+        if let dragStart { return dragStart }
+        dragStart = redaction.rect
+        model.selectRedaction(redaction.id)
+        return redaction.rect
+    }
+
+    private func viewRect(_ rect: CGRect) -> CGRect {
+        CGRect(x: screen.minX + rect.minX * screen.width, y: screen.minY + rect.minY * screen.height,
+               width: rect.width * screen.width, height: rect.height * screen.height)
+    }
+}
+
+/// Dims the screen while drawing a new area; drag out a rectangle, or click for a default-sized one.
+private struct RedactionDrawingSurface: View {
+    @Bindable var model: EditorModel
+    let style: RedactionStyle
+    let screen: CGRect
+    @State private var start: CGPoint?
+    @State private var current: CGPoint?
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Rectangle()
+                .fill(Color.black.opacity(0.25))
+                .frame(width: screen.width, height: screen.height)
+                .position(x: screen.midX, y: screen.midY)
+                .pointerStyle(.rectSelection)
+                .gesture(
+                    DragGesture(minimumDistance: 0, coordinateSpace: .named("preview"))
+                        .onChanged { value in
+                            if start == nil { start = clamped(value.startLocation) }
+                            current = clamped(value.location)
+                        }
+                        .onEnded { value in
+                            finish(from: start ?? clamped(value.startLocation), to: clamped(value.location))
+                            start = nil
+                            current = nil
+                        }
+                )
+                .accessibilityLabel("Drag to choose the area to \(style == .blur ? "blur" : "pixelate")")
+
+            if let start, let current {
+                let rect = CGRect(x: min(start.x, current.x), y: min(start.y, current.y),
+                                  width: abs(current.x - start.x), height: abs(current.y - start.y))
+                Rectangle()
+                    .fill(Color.accentColor.opacity(0.18))
+                    .overlay(Rectangle().strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4])))
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func clamped(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x.clamped(to: screen.minX...screen.maxX), y: point.y.clamped(to: screen.minY...screen.maxY))
+    }
+
+    private func finish(from start: CGPoint, to end: CGPoint) {
+        guard screen.width > 0, screen.height > 0 else { return }
+        var rect = CGRect(x: (min(start.x, end.x) - screen.minX) / screen.width,
+                          y: (min(start.y, end.y) - screen.minY) / screen.height,
+                          width: abs(end.x - start.x) / screen.width,
+                          height: abs(end.y - start.y) / screen.height)
+        if abs(end.x - start.x) < 6, abs(end.y - start.y) < 6 {
+            // A click: a field-sized area centered on it.
+            let size = CGSize(width: 0.22, height: 0.07)
+            rect = CGRect(x: rect.minX - size.width / 2, y: rect.minY - size.height / 2,
+                          width: size.width, height: size.height)
+        }
+        model.finishRedaction(rect: rect)
     }
 }
 
@@ -444,10 +674,17 @@ private struct HintView: View {
             Image(systemName: "info.circle.fill").foregroundStyle(.secondary)
             Text(hint.message)
                 .font(.system(size: 12, weight: .medium))
-            if hint.offersApplyToAll {
+            switch hint.action {
+            case .applyCameraToAllSections:
                 Button("Apply to All Sections") { model.applyCameraToAllSections() }
                     .controlSize(.small)
                     .help("Use this camera shape, position and size in every section")
+            case .applyRedactionToAllSections(let id):
+                Button("Apply to All Sections") { model.applyRedactionToAllSections(id) }
+                    .controlSize(.small)
+                    .help("Blur this area in every section")
+            case nil:
+                EmptyView()
             }
             Button {
                 model.dismissHint()
@@ -482,7 +719,35 @@ private struct ExportStatusView: View {
                         .controlSize(.small)
                 }
                 .statusCapsule()
-            case .finished(let url):
+            case .finished(let url, let clips) where !clips.isEmpty:
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    Text("Ready for iMovie")
+                        .font(.system(size: 12, weight: .medium))
+                        .fixedSize()
+                        .help("Drag the clips into your iMovie project, or import them with File › Import Media")
+                    ForEach(clips, id: \.url) { clip in
+                        ClipChip(clip: clip)
+                    }
+                    if let iMovie = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.iMovieApp") {
+                        Button("Open iMovie") {
+                            NSWorkspace.shared.openApplication(at: iMovie, configuration: NSWorkspace.OpenConfiguration())
+                        }
+                        .controlSize(.small)
+                        .help("Then drag the clips into your iMovie project, or use File › Import Media")
+                    }
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(clips.map(\.url)) }
+                        .controlSize(.small)
+                        .help(url.path)
+                    Button {
+                        model.dismissExportStatus()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .statusCapsule()
+            case .finished(let url, _):
                 HStack(spacing: 10) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                     Text("Exported \(url.lastPathComponent)")
@@ -519,6 +784,23 @@ private struct ExportStatusView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: model.export)
+    }
+}
+
+/// An exported clip that can be dragged straight into iMovie (or anywhere that takes files).
+private struct ClipChip: View {
+    let clip: ExportedClip
+
+    var body: some View {
+        Label(clip.kind.title, systemImage: clip.kind.symbol)
+            .font(.system(size: 11, weight: .medium))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.white.opacity(0.14)))
+            .fixedSize()
+            .onDrag { NSItemProvider(contentsOf: clip.url) ?? NSItemProvider() }
+            .pointerStyle(.grabIdle)
+            .help("Drag \(clip.url.lastPathComponent) into iMovie")
     }
 }
 

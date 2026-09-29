@@ -286,11 +286,13 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
 }
 
 @MainActor @Suite(.serialized) struct EditorModelTests {
-    private func makeModel() async throws -> (EditorModel, URL) {
+    private func makeModel(microphone: Bool = false) async throws -> (EditorModel, URL) {
         let root = PipelineTests.scratchRoot.appendingPathComponent("editor-\(UUID().uuidString)")
         let folder = root.appendingPathComponent("take")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let (recording, files) = try await PipelineTests.makeRecording(folder: folder)
+        let (recording, files) = microphone
+            ? try await PipelineTests.makeRecordingWithMicrophone(folder: folder)
+            : try await PipelineTests.makeRecording(folder: folder)
         let model = EditorModel(recording: recording, files: files, library: RecordingLibrary(rootURL: root),
                                 preferences: .shared)
         await model.load()
@@ -359,7 +361,7 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         #expect(model.currentCameraPlacement.shape == .roundedRectangle)
         #expect(model.recording.edit.cameraPlacement(for: model.sections[0]).shape == .circle)
         #expect(model.recording.edit.camera.shape == .circle)
-        #expect(model.hint?.offersApplyToAll == true)
+        #expect(model.hint?.action == .applyCameraToAllSections)
 
         step(model) { model.applyCameraToAllSections() }
         #expect(model.sections.allSatisfy { model.recording.edit.cameraPlacement(for: $0).shape == .roundedRectangle })
@@ -428,6 +430,82 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         model.updateCue(second.id, text: "two, edited")
         model.undoManager.undo()
         #expect(model.recording.transcript?.cues.map(\.text) == ["one", "two, edited"])
+    }
+
+    @Test func blurAreasAreDrawnSelectedAndDeleted() async throws {
+        let (model, root) = try await makeModel()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        model.seek(to: 1)
+        step(model) { model.splitAtPlayhead() }
+        step(model) { EditorCommand.blurArea.perform(on: model) }
+        #expect(model.drawingRedaction == .blur)
+        #expect(EditorCommand.cancelEditing.isEnabled(for: model))
+        step(model) { model.finishRedaction(rect: CGRect(x: 0.1, y: 0.1, width: 0.3, height: 0.1)) }
+        #expect(model.drawingRedaction == nil)
+        #expect(model.currentRedactions.count == 1)
+        #expect(model.sections[0].redactions.isEmpty)
+        let id = try #require(model.selectedRedaction?.id)
+        #expect(model.hint?.action == .applyRedactionToAllSections(id))
+        #expect(model.undoManager.undoActionName == "Add Blur")
+
+        // Drags merge into one step.
+        for x in stride(from: 0.12, through: 0.3, by: 0.06) {
+            step(model) { model.setRedactionRect(CGRect(x: x, y: 0.1, width: 0.3, height: 0.1), for: id, resizing: false) }
+        }
+        #expect(abs((model.selectedRedaction?.x ?? 0) - 0.3) < 1e-9)
+        model.undoManager.undo()
+        #expect(abs((model.selectedRedaction?.x ?? 0) - 0.1) < 1e-9)
+
+        step(model) { model.applyRedactionToAllSections(id) }
+        #expect(model.sections.allSatisfy { $0.redactions.map(\.id) == [id] })
+
+        // The selection stays in its section: elsewhere ⌫ deletes the section, not an unseen copy.
+        model.seek(to: 0.5)
+        #expect(model.selectedRedaction == nil)
+        #expect(EditorCommand.deleteSection.title(for: model) == "Delete Section")
+        model.seek(to: 1.5)
+        model.selectRedaction(id)
+
+        // With a blur selected, ⌫ deletes the blur rather than the section.
+        #expect(EditorCommand.deleteSection.title(for: model) == "Delete Blur")
+        step(model) { EditorCommand.deleteSection.perform(on: model) }
+        #expect(model.currentRedactions.isEmpty)
+        #expect(!model.currentSection.isDeleted)
+        #expect(model.sections[0].redactions.count == 1)
+        #expect(EditorCommand.deleteSection.title(for: model) == "Delete Section")
+
+        // Hidden screens can't be blurred.
+        step(model) { model.toggleScreen() }
+        #expect(!EditorCommand.blurArea.isEnabled(for: model))
+    }
+
+    @Test func removesSilencesInOneUndoStep() async throws {
+        let (model, root) = try await makeModel(microphone: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        #expect(EditorCommand.splitAtSilences.isEnabled(for: model))
+        step(model) { EditorCommand.splitAtSilences.perform(on: model) }
+        #expect(model.isSilenceSheetPresented)
+        for _ in 0..<100 where model.silenceAnalysis == .analyzing { try await Task.sleep(for: .milliseconds(20)) }
+        guard case .ready = model.silenceAnalysis else {
+            Issue.record("Analysis didn't finish: \(model.silenceAnalysis)")
+            return
+        }
+        model.silenceSettings.minimumDuration = 0.5
+        model.silenceSettings.padding = 0.1
+        let pauses = model.silencePauses
+        try #require(pauses.count == 1, "\(pauses)")
+        #expect(abs(pauses[0].lowerBound - 0.7) < 0.07 && abs(pauses[0].upperBound - 1.4) < 0.07)
+
+        step(model) { model.cutSilences() }
+        #expect(!model.isSilenceSheetPresented)
+        #expect(model.sections.count == 3)
+        #expect(model.sections.map(\.isDeleted) == [false, true, false])
+        #expect(model.undoManager.undoActionName == "Remove Pauses")
+        #expect(model.hint?.message.hasPrefix("Removed 1 pause") == true)
+        model.undoManager.undo()
+        #expect(model.sections.count == 1)
     }
 
     @Test func differentSettingsAreSeparateUndoSteps() async throws {

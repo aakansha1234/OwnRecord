@@ -17,6 +17,10 @@ and the Speech framework. Requires macOS 15 or later.
 - Menu bar item with live timer, and global shortcuts that work from any app:
   **⌥⇧⌘R** start/stop, **⌥⇧⌘P** pause/resume.
 - Crash-tolerant recordings (fragmented movie files).
+- **Teleprompter** for your script or speaker notes: a floating window just under the camera
+  that scrolls by itself (adjustable speed and text size), starts and pauses with the recording,
+  and is never captured. Turn it on in the recorder or with ⌥⌘T; **⌥⇧⌘T** starts or pauses
+  scrolling from any app.
 
 **Camera overlay**
 - A live, draggable camera bubble while recording (circle, rounded square or 16:9;
@@ -42,6 +46,12 @@ and the Speech framework. Requires macOS 15 or later.
   **move, resize or reshape the camera** for that section (drag it, or ⌥ + arrow keys between
   corners), or **mute** it (M). Layout changes between sections animate smoothly, and deleted parts are
   skipped seamlessly in playback and export.
+- **Blur or pixelate** passwords, emails and other private details: press B (or ⇧B) and drag
+  over the area in the preview, then move or resize it. Blurs belong to a section like the other
+  section settings, or apply to all sections at once.
+- **Split at silences** (⇧S) finds the pauses in your voice, shows them on a level graph and the
+  timeline, and splits around them or removes them in one undoable step (adjustable threshold,
+  shortest pause and the margin kept around speech).
 - Everything is keyboard-driven and in the **Timeline** and **Playback** menus: ↑ ↓ jump between
   splits, I / O trim to the playhead, ⌘Z / ⇧⌘Z undo and redo every edit, ⌘/ shows all shortcuts.
   Right-click a section on the timeline for more (join, reset, camera position).
@@ -50,6 +60,9 @@ and the Speech framework. Requires macOS 15 or later.
 - Per-track volume for microphone and system audio.
 - Export **MP4 / MOV** (H.264 or HEVC; Original, 4K, 1440p, 1080p, 720p) or **GIF**, with an
   optional `.srt` sidecar. Then Show in Finder, **Copy** (paste straight into Slack/Mail) or Share.
+- Export for **iMovie**: the finished video, and/or the screen (with the sound) and camera as
+  separate clips, with cuts, blurs, hidden parts and mutes applied and lined up for picture in
+  picture. Drag the clips straight from OwnRecord into iMovie.
 
 **Library**
 - All recordings with edited-look thumbnails, search across **titles and transcripts**,
@@ -102,14 +115,14 @@ Sources/OwnRecord
 │                   mic capture, MovieWriter (AVAssetWriter), RecordingClock (pause-aware timeline)
 ├── Rendering/      LayoutEngine (pure geometry), FrameRenderer (Core Image), custom
 │                   AVVideoCompositing compositor, CompositionBuilder
-├── Transcription/  Speech-framework engine, cue builder, SRT/VTT export
-├── Export/         video + GIF export
+├── Transcription/  Speech-framework engine, cue builder, SRT/VTT export, silence detection
+├── Export/         video, GIF and iMovie clip export
 ├── Library/        on-disk recording store, thumbnails
 ├── Models/         Recording, EditSettings (layout/camera/subtitles/audio), timeline sections
 │                   and the source ↔ edited time map, Transcript
 ├── Support/        preferences, permissions, hot keys, panels, helpers
 └── UI/             Home (library), Recorder panel, Overlays (bubble, controls, countdown,
-                    area selection), Editor, Settings
+                    area selection), Editor, Teleprompter, Settings
 ```
 
 Screen and camera writers start their sessions at the same host-clock instant, so the two files
@@ -119,8 +132,9 @@ what you see is what you export.
 ## Roadmap ideas
 
 - **Auto-zoom on clicks** and smoothed/enlarged cursor (Screen Studio's signature feature).
-- Speed changes per section, **remove silences and filler words** from the transcript
-  (text-based editing), zoom into a region for a section.
+- Speed changes per section, **remove filler words** from the transcript (text-based editing),
+  zoom into a region for a section.
+- Export projects for Final Cut Pro, DaVinci Resolve and Premiere Pro (FCPXML / XML).
 - Animated word-by-word captions; subtitle **translation** (Translation framework).
 - AI title, summary and chapters (Apple Foundation Models on macOS 26, or a cloud LLM).
 - Camera background blur/replacement (Vision person segmentation), voice noise reduction.

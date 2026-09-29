@@ -15,6 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotKeyCenter.shared.register(id: 2, shortcut: HotKeyCenter.togglePause) {
             AppModel.shared.recording.togglePause()
         }
+        HotKeyCenter.shared.register(id: 3, shortcut: HotKeyCenter.toggleTeleprompter) {
+            AppModel.shared.teleprompter.toggleScrolling()
+        }
+        // Created up front so it can be left out of recordings from the start (see Teleprompter.windowID).
+        _ = model.teleprompter.windowID
 
         model.windows.showHome()
     }
@@ -61,6 +66,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openRecordingsFolder(_ sender: Any?) {
         NSWorkspace.shared.open(AppModel.shared.library.rootURL)
+    }
+
+    @objc func toggleTeleprompter(_ sender: Any?) {
+        AppModel.shared.teleprompter.toggleVisibility()
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleTeleprompter(_:)) {
+            item.title = AppModel.shared.teleprompter.isVisible ? "Hide Teleprompter" : "Show Teleprompter"
+        }
+        return true
     }
 }
 
@@ -109,7 +127,7 @@ enum MainMenu {
         // Editor commands. Their single-key shortcuts are disabled while typing in a text field
         // (see EditorWindowController), so they never swallow text input.
         let timelineMenu = NSMenu(title: "Timeline")
-        for command: EditorCommand in [.split, .deleteSection, .joinNext] {
+        for command: EditorCommand in [.split, .splitAtSilences, .deleteSection, .joinNext] {
             timelineMenu.addItem(command.menuItem())
         }
         timelineMenu.addItem(.separator())
@@ -123,6 +141,10 @@ enum MainMenu {
         cameraMenu.addItem(.separator())
         cameraMenu.addItem(EditorCommand.cameraEverywhere.menuItem())
         timelineMenu.addItem(submenu: cameraMenu, title: "Move Camera")
+        timelineMenu.addItem(.separator())
+        for command: EditorCommand in [.blurArea, .pixelateArea, .cancelEditing] {
+            timelineMenu.addItem(command.menuItem())
+        }
         timelineMenu.addItem(.separator())
         for command: EditorCommand in [.trimStart, .trimEnd, .resetTrim] {
             timelineMenu.addItem(command.menuItem())
@@ -146,6 +168,10 @@ enum MainMenu {
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        let teleprompter = windowMenu.addItem(withTitle: "Show Teleprompter", action: #selector(AppDelegate.toggleTeleprompter(_:)),
+                                              keyEquivalent: "t")
+        teleprompter.keyEquivalentModifierMask = [.command, .option]
         windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         NSApp.windowsMenu = windowMenu

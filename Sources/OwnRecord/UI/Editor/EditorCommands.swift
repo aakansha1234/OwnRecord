@@ -8,11 +8,14 @@ enum EditorCommand: Int, CaseIterable {
     case cameraLeft, cameraRight, cameraUp, cameraDown, cameraEverywhere
     case trimStart, trimEnd, resetTrim
     case showShortcuts
+    case blurArea, pixelateArea, cancelEditing
+    case splitAtSilences
 
     enum Group: String, CaseIterable {
         case playback = "Playback"
         case sections = "Sections"
         case camera = "Camera"
+        case blur = "Blur"
         case trim = "Trim"
     }
 
@@ -20,12 +23,15 @@ enum EditorCommand: Int, CaseIterable {
         switch self {
         case .playPause, .goToStart, .previousFrame, .nextFrame, .backOneSecond, .forwardOneSecond, .previousEdit, .nextEdit:
             .playback
-        case .split, .deleteSection, .toggleScreen, .toggleCamera, .toggleAudio, .joinNext, .resetSection, .showShortcuts:
+        case .split, .deleteSection, .toggleScreen, .toggleCamera, .toggleAudio, .joinNext, .resetSection, .showShortcuts,
+             .splitAtSilences:
             .sections
         case .cameraLeft, .cameraRight, .cameraUp, .cameraDown, .cameraEverywhere:
             .camera
         case .trimStart, .trimEnd, .resetTrim:
             .trim
+        case .blurArea, .pixelateArea, .cancelEditing:
+            .blur
         }
     }
 
@@ -56,19 +62,27 @@ enum EditorCommand: Int, CaseIterable {
         case .trimEnd: "Trim End to Playhead"
         case .resetTrim: "Reset Trim"
         case .showShortcuts: "Keyboard Shortcuts"
+        case .blurArea: "Blur Area"
+        case .pixelateArea: "Pixelate Area"
+        case .cancelEditing: "Deselect"
+        case .splitAtSilences: "Split at Silences…"
         }
     }
 
     /// Short description for the shortcuts reference.
     var summary: String {
         switch self {
-        case .deleteSection: "Delete or restore section"
+        case .deleteSection: "Delete or restore section (or the selected blur)"
         case .toggleScreen: "Hide or show the screen"
         case .toggleCamera: "Hide or show the camera"
         case .toggleAudio: "Mute or unmute audio"
         case .playPause: "Play / pause"
         case .previousEdit: "Previous split or trim point"
         case .nextEdit: "Next split or trim point"
+        case .blurArea: "Blur an area"
+        case .pixelateArea: "Pixelate an area"
+        case .cancelEditing: "Cancel or deselect"
+        case .splitAtSilences: "Split at silences"
         default: title
         }
     }
@@ -85,7 +99,12 @@ enum EditorCommand: Int, CaseIterable {
         case .nextFrame, .forwardOneSecond, .cameraRight: Self.functionKey(NSRightArrowFunctionKey)
         case .previousEdit, .cameraUp: Self.functionKey(NSUpArrowFunctionKey)
         case .nextEdit, .cameraDown: Self.functionKey(NSDownArrowFunctionKey)
+        // Shifted letters are given in upper case: a lower-case key with Shift would also catch the plain key.
         case .split: "s"
+        case .splitAtSilences: "S"
+        case .blurArea: "b"
+        case .pixelateArea: "B"
+        case .cancelEditing: "\u{1b}"
         case .deleteSection: "\u{8}"
         case .toggleScreen: "h"
         case .toggleCamera: "c"
@@ -99,7 +118,7 @@ enum EditorCommand: Int, CaseIterable {
 
     var modifiers: NSEvent.ModifierFlags {
         switch self {
-        case .backOneSecond, .forwardOneSecond: [.shift]
+        case .backOneSecond, .forwardOneSecond, .pixelateArea, .splitAtSilences: [.shift]
         case .cameraLeft, .cameraRight, .cameraUp, .cameraDown: [.option]
         case .showShortcuts: [.command]
         default: []
@@ -117,6 +136,7 @@ enum EditorCommand: Int, CaseIterable {
         case .previousEdit, .cameraUp: key = "↑"
         case .nextEdit, .cameraDown: key = "↓"
         case .deleteSection: key = "⌫"
+        case .cancelEditing: key = "Esc"
         default:
             guard !keyEquivalent.isEmpty else { return nil }
             key = keyEquivalent.uppercased()
@@ -143,10 +163,13 @@ enum EditorCommand: Int, CaseIterable {
     func title(for model: EditorModel) -> String {
         let section = model.currentSection
         switch self {
-        case .deleteSection: return section.isDeleted ? "Restore Section" : "Delete Section"
+        case .deleteSection:
+            if let redaction = model.selectedRedaction { return "Delete \(redaction.style.noun)" }
+            return section.isDeleted ? "Restore Section" : "Delete Section"
         case .toggleScreen: return section.showsScreen ? "Hide Screen in Section" : "Show Screen in Section"
         case .toggleCamera: return section.showsCamera ? "Hide Camera in Section" : "Show Camera in Section"
         case .toggleAudio: return section.mutesAudio ? "Unmute Section" : "Mute Section"
+        case .cancelEditing: return model.drawingRedaction != nil ? "Cancel Blur" : "Deselect"
         default: return title
         }
     }
@@ -161,6 +184,9 @@ enum EditorCommand: Int, CaseIterable {
         case .cameraEverywhere: return model.hasCameraTrack && !model.cameraPlacementIsUniform
         case .toggleAudio: return model.recording.hasAudio
         case .resetTrim: return model.isTrimmed
+        case .blurArea, .pixelateArea: return model.canRedact
+        case .cancelEditing: return model.canCancelRedactionEditing
+        case .splitAtSilences: return model.recording.hasAudio
         default: return true
         }
     }
@@ -177,7 +203,8 @@ enum EditorCommand: Int, CaseIterable {
         case .previousEdit: model.goToEditPoint(forward: false)
         case .nextEdit: model.goToEditPoint(forward: true)
         case .split: model.splitAtPlayhead()
-        case .deleteSection: model.toggleDeleted()
+        case .deleteSection:
+            if model.selectedRedaction != nil { model.deleteRedaction() } else { model.toggleDeleted() }
         case .toggleScreen: model.toggleScreen()
         case .toggleCamera: model.toggleCamera()
         case .toggleAudio: model.toggleMute()
@@ -192,6 +219,10 @@ enum EditorCommand: Int, CaseIterable {
         case .trimEnd: model.setTrimEndAtPlayhead()
         case .resetTrim: model.resetTrim()
         case .showShortcuts: model.isShortcutsPresented.toggle()
+        case .blurArea: model.beginRedaction(.blur)
+        case .pixelateArea: model.beginRedaction(.pixelate)
+        case .cancelEditing: model.cancelRedactionEditing()
+        case .splitAtSilences: model.showSilenceSheet()
         }
     }
 }

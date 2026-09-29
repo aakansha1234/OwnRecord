@@ -18,6 +18,13 @@ enum TimeFormat {
         let rest = clamped - Double(minutes * 60)
         return String(format: "%02d:%04.1f", minutes, rest)
     }
+
+    /// "4.2 s" or "1 min 12 s", for amounts of time rather than positions.
+    static func length(_ seconds: Double) -> String {
+        guard seconds >= 60 else { return String(format: "%.1f s", max(0, seconds)) }
+        let total = Int(seconds.rounded())
+        return total % 60 == 0 ? "\(total / 60) min" : "\(total / 60) min \(total % 60) s"
+    }
 }
 
 extension Double {

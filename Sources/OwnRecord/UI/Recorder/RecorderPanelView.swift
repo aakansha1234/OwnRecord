@@ -5,6 +5,7 @@ struct RecorderPanelView: View {
     @Bindable var recorder: RecorderModel
     let controller: RecordingController
     @Bindable var preferences: Preferences
+    var teleprompter = AppModel.shared.teleprompter
 
     var body: some View {
         VStack(spacing: 0) {
@@ -294,6 +295,17 @@ struct RecorderPanelView: View {
                         .labelsHidden()
                 }
             }
+            DeviceRow(symbol: "text.alignleft", title: "Teleprompter") {
+                HStack {
+                    Spacer()
+                    Toggle("Teleprompter", isOn: Binding(get: { teleprompter.isVisible },
+                                                         set: { teleprompter.setVisible($0) }))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .labelsHidden()
+                }
+            }
+            .help("Your script or notes in a floating window that's never recorded")
         }
         .labelsHidden()
     }
