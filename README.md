@@ -39,8 +39,8 @@ and the Speech framework. Requires macOS 15 or later.
 - Trim with a filmstrip timeline, frame stepping (← →), Space to play/pause.
 - **Split the recording into sections** (S) and edit each one: **delete** it (⌫, press again to
   restore), **hide the screen** (H; the camera then fills the frame), **hide the camera** (C),
-  **move the camera** for that section (drag it, or ⌥ + arrow keys between corners), or
-  **mute** it (M). Layout changes between sections animate smoothly, and deleted parts are
+  **move, resize or reshape the camera** for that section (drag it, or ⌥ + arrow keys between
+  corners), or **mute** it (M). Layout changes between sections animate smoothly, and deleted parts are
   skipped seamlessly in playback and export.
 - Everything is keyboard-driven and in the **Timeline** and **Playback** menus: ↑ ↓ jump between
   splits, I / O trim to the playhead, ⌘Z / ⇧⌘Z undo and redo every edit, ⌘/ shows all shortcuts.

@@ -51,7 +51,7 @@ enum EditorCommand: Int, CaseIterable {
         case .cameraRight: "Move Camera Right"
         case .cameraUp: "Move Camera Up"
         case .cameraDown: "Move Camera Down"
-        case .cameraEverywhere: "Use Camera Position Everywhere"
+        case .cameraEverywhere: "Apply Camera to All Sections"
         case .trimStart: "Trim Start to Playhead"
         case .trimEnd: "Trim End to Playhead"
         case .resetTrim: "Reset Trim"

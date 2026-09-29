@@ -102,6 +102,27 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         #expect(decoded == edit)
     }
 
+    @Test func cameraShapeIsPerSection() throws {
+        var edit = EditSettings()
+        edit.camera.shape = .roundedSquare
+        edit.split(at: 2, duration: 10)
+        // Sections without their own shape (including ones saved before shapes were per section)
+        // use the recording's shape.
+        let saved = #"{"start":2,"camera":{"position":"topLeft","customX":0.85,"customY":0.8,"size":0.3}}"#
+        edit.sections[1] = try JSONDecoder().decode(TimelineSection.self, from: Data(saved.utf8))
+        #expect(edit.cameraPlacement(for: edit.sections[0]).shape == .roundedSquare)
+        #expect(edit.cameraPlacement(for: edit.sections[1]).shape == .roundedSquare)
+
+        edit.sections[1].camera?.shape = .roundedRectangle
+        #expect(edit.cameraPlacement(for: edit.sections[1]).shape == .roundedRectangle)
+        #expect(edit.cameraPlacement(for: edit.sections[0]).shape == .roundedSquare)
+        let canvas = CGSize(width: 1920, height: 1080)
+        let wide = LayoutEngine.layout(canvas: canvas, source: canvas, edit: edit, hasCamera: true, at: 5).cameraRect!
+        let square = LayoutEngine.layout(canvas: canvas, source: canvas, edit: edit, hasCamera: true, at: 1).cameraRect!
+        #expect(abs(wide.width / wide.height - 16.0 / 9.0) < 0.001)
+        #expect(square.width == square.height)
+    }
+
     @Test func cameraNudgesBetweenCorners() {
         var placement = CameraPlacement()
         placement.position = .bottomRight
@@ -326,6 +347,24 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         model.undoManager.undo()
         #expect(model.currentSection.camera == nil)
         #expect(!model.undoManager.canUndo)
+    }
+
+    @Test func shapeChangesOnlyTheCurrentSection() async throws {
+        let (model, root) = try await makeModel()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        model.seek(to: 1)
+        step(model) { model.splitAtPlayhead() }
+        step(model) { model.setCameraShape(.roundedRectangle) }
+        #expect(model.currentCameraPlacement.shape == .roundedRectangle)
+        #expect(model.recording.edit.cameraPlacement(for: model.sections[0]).shape == .circle)
+        #expect(model.recording.edit.camera.shape == .circle)
+        #expect(model.hint?.offersApplyToAll == true)
+
+        step(model) { model.applyCameraToAllSections() }
+        #expect(model.sections.allSatisfy { model.recording.edit.cameraPlacement(for: $0).shape == .roundedRectangle })
+        model.undoManager.undo()
+        #expect(model.recording.edit.cameraPlacement(for: model.sections[0]).shape == .circle)
     }
 
     @Test func cannotRemoveEverything() async throws {

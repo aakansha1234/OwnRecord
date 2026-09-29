@@ -1,6 +1,6 @@
 import Foundation
 
-/// Where the camera overlay sits and how big it is. Sections can override it.
+/// Where the camera overlay sits, how big it is and its shape. Sections can override it.
 struct CameraPlacement: Codable, Hashable {
     var position: CameraPosition = .bottomRight
     /// Normalized center (top-left origin) used when `position == .custom`.
@@ -8,6 +8,8 @@ struct CameraPlacement: Codable, Hashable {
     var customY: Double = 0.8
     /// Overlay height as a fraction of the canvas' shorter side.
     var size: Double = 0.26
+    /// nil uses the recording-wide shape (sections saved before shapes were per section).
+    var shape: CameraShape?
 }
 
 /// A stretch of the recording between two splits. It ends where the next section starts.
@@ -46,12 +48,13 @@ struct TimelineSection: Codable, Hashable, Identifiable {
 
 extension CameraOverlayStyle {
     var placement: CameraPlacement {
-        get { CameraPlacement(position: position, customX: customX, customY: customY, size: size) }
+        get { CameraPlacement(position: position, customX: customX, customY: customY, size: size, shape: shape) }
         set {
             position = newValue.position
             customX = newValue.customX
             customY = newValue.customY
             size = newValue.size
+            shape = newValue.shape ?? shape
         }
     }
 
@@ -84,8 +87,11 @@ extension EditSettings {
         return start..<max(start, end)
     }
 
+    /// The camera position, size and shape in a section (shape always filled in).
     func cameraPlacement(for section: TimelineSection) -> CameraPlacement {
-        section.camera ?? camera.placement
+        var placement = section.camera ?? camera.placement
+        placement.shape = placement.shape ?? camera.shape
+        return placement
     }
 
     /// The parts of the recording that make it into the video, in order and merged.

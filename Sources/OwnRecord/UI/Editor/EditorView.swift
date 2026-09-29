@@ -445,9 +445,9 @@ private struct HintView: View {
             Text(hint.message)
                 .font(.system(size: 12, weight: .medium))
             if hint.offersApplyToAll {
-                Button("Use Everywhere") { model.applyCameraToAllSections() }
+                Button("Apply to All Sections") { model.applyCameraToAllSections() }
                     .controlSize(.small)
-                    .help("Use this camera position and size in every section")
+                    .help("Use this camera shape, position and size in every section")
             }
             Button {
                 model.dismissHint()

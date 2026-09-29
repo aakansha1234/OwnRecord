@@ -315,6 +315,11 @@ struct SectionMenu: View {
                         Button(corner.title) { model.setCameraCorner(corner, for: sectionID) }
                     }
                 }
+                Menu("Camera Shape") {
+                    ForEach(CameraShape.allCases) { shape in
+                        Button(shape.title) { model.setCameraShape(shape, for: sectionID) }
+                    }
+                }
             }
             if model.recording.hasAudio {
                 Button(section.mutesAudio ? "Unmute Audio" : "Mute Audio") { model.toggleMute(sectionID) }

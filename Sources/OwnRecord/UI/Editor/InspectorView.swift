@@ -233,12 +233,12 @@ private struct CameraInspector: View {
             }
 
             Group {
-                InspectorSection("Shape") {
+                InspectorSection(model.hasMultipleSections ? "Shape in this section" : "Shape") {
                     HStack(spacing: 8) {
                         ForEach(CameraShape.allCases) { shape in
-                            let selected = model.recording.edit.camera.shape == shape
+                            let selected = model.currentCameraPlacement.shape == shape
                             Button {
-                                model.recording.edit.camera.shape = shape
+                                model.setCameraShape(shape)
                             } label: {
                                 VStack(spacing: 4) {
                                     Image(systemName: shape.symbol + (selected ? ".fill" : ""))
@@ -252,9 +252,13 @@ private struct CameraInspector: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("\(shape.title) camera")
+                            .accessibilityAddTraits(selected ? .isSelected : [])
                         }
                     }
                 }
+                // A camera that fills the frame has no shape of its own.
+                .disabled(!section.showsScreen)
 
                 InspectorSection(model.hasMultipleSections ? "Position in this section" : "Position") {
                     if !section.showsScreen {
@@ -289,7 +293,7 @@ private struct CameraInspector: View {
                         .disabled(model.currentCameraPlacement.position == .custom || !section.showsScreen)
                 }
 
-                InspectorSection("Style") {
+                InspectorSection(model.hasMultipleSections ? "Style · all sections" : "Style") {
                     SliderRow(title: "Border", value: $model.recording.edit.camera.borderWidth, range: 0...0.08)
                     ColorPicker("Border color", selection: Binding(
                         get: { model.recording.edit.camera.borderColor.color },
@@ -352,14 +356,15 @@ private struct SectionScopeNote: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: "rectangle.split.3x1")
                 .foregroundStyle(.secondary)
-            Text("Visibility, position and size apply to section \(model.currentSectionIndex + 1) of \(model.sections.count).")
+            Text("Visibility, shape, position and size apply to section \(model.currentSectionIndex + 1) of \(model.sections.count).")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         if !model.cameraPlacementIsUniform {
-            Button("Use This Position Everywhere") { model.applyCameraToAllSections() }
+            Button("Apply to All Sections") { model.applyCameraToAllSections() }
+                .help("Use this section's camera shape, position and size in every section")
                 .controlSize(.small)
         }
     }

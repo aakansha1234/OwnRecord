@@ -467,6 +467,14 @@ final class EditorModel {
         hintIfSectionOnly()
     }
 
+    func setCameraShape(_ shape: CameraShape, for id: TimelineSection.ID? = nil) {
+        let index = sectionIndex(for: id)
+        var placement = recording.edit.cameraPlacement(for: sections[index])
+        placement.shape = shape
+        setCameraPlacement(placement, name: "Change Camera Shape", coalescing: false, index: index)
+        hintIfSectionOnly()
+    }
+
     /// Moves the camera toward an edge of the frame (keyboard: ⌥ + arrow).
     func nudgeCamera(toward edge: CameraEdge) {
         guard hasCameraTrack else { NSSound.beep(); return }
@@ -482,10 +490,10 @@ final class EditorModel {
         }
     }
 
-    /// Uses the camera position and size of the section at the playhead in every section.
+    /// Uses the camera position, size and shape of the section at the playhead in every section.
     func applyCameraToAllSections() {
         let placement = currentCameraPlacement
-        performEdit("Use Camera Position Everywhere") {
+        performEdit("Apply Camera to All Sections") {
             recording.edit.camera.placement = placement
             for index in recording.edit.sections.indices {
                 recording.edit.sections[index].camera = nil
@@ -494,7 +502,7 @@ final class EditorModel {
         dismissHint()
     }
 
-    /// Whether every section uses the same camera placement.
+    /// Whether every section uses the same camera position, size and shape.
     var cameraPlacementIsUniform: Bool {
         Set(sections.map { recording.edit.cameraPlacement(for: $0) }).count <= 1
     }
@@ -508,7 +516,7 @@ final class EditorModel {
 
     private func hintIfSectionOnly() {
         guard hasMultipleSections, !cameraPlacementIsUniform else { return }
-        showHint("Camera moved in this section only.", offersApplyToAll: true)
+        showHint("Camera changed in this section only.", offersApplyToAll: true)
     }
 
     // MARK: Hints
