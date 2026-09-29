@@ -100,6 +100,10 @@ final class RecorderPanelController {
             panel.host(RecorderPanelView(recorder: app.recorder, controller: app.recording, preferences: app.preferences))
             self.panel = panel
             position(panel)
+            NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: panel,
+                                                   queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.keepOnScreen() }
+            }
         }
         guard let panel else { return }
         if !panel.isVisible { position(panel) }
@@ -115,6 +119,14 @@ final class RecorderPanelController {
         guard let visible = NSScreen.withMouse?.visibleFrame else { return }
         let size = panel.frame.size
         panel.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: visible.minY + 80))
+    }
+
+    /// The panel grows downward with its content (another capture mode, the window list loading),
+    /// so move it up if that takes the Start button off screen.
+    private func keepOnScreen() {
+        guard let panel, let visible = (panel.screen ?? NSScreen.withMouse)?.visibleFrame else { return }
+        let y = min(max(panel.frame.minY, visible.minY + 20), visible.maxY - panel.frame.height)
+        if y != panel.frame.minY { panel.setFrameOrigin(NSPoint(x: panel.frame.minX, y: y)) }
     }
 }
 
