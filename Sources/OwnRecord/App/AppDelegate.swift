@@ -106,6 +106,43 @@ enum MainMenu {
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         main.addItem(submenu: editMenu, title: "Edit")
 
+        // Editor commands. Their single-key shortcuts are disabled while typing in a text field
+        // (see EditorWindowController), so they never swallow text input.
+        let timelineMenu = NSMenu(title: "Timeline")
+        for command: EditorCommand in [.split, .deleteSection, .joinNext] {
+            timelineMenu.addItem(command.menuItem())
+        }
+        timelineMenu.addItem(.separator())
+        for command: EditorCommand in [.toggleScreen, .toggleCamera, .toggleAudio, .resetSection] {
+            timelineMenu.addItem(command.menuItem())
+        }
+        let cameraMenu = NSMenu(title: "Move Camera")
+        for command: EditorCommand in [.cameraLeft, .cameraRight, .cameraUp, .cameraDown] {
+            cameraMenu.addItem(command.menuItem())
+        }
+        cameraMenu.addItem(.separator())
+        cameraMenu.addItem(EditorCommand.cameraEverywhere.menuItem())
+        timelineMenu.addItem(submenu: cameraMenu, title: "Move Camera")
+        timelineMenu.addItem(.separator())
+        for command: EditorCommand in [.trimStart, .trimEnd, .resetTrim] {
+            timelineMenu.addItem(command.menuItem())
+        }
+        main.addItem(submenu: timelineMenu, title: "Timeline")
+
+        let playbackMenu = NSMenu(title: "Playback")
+        for command: EditorCommand in [.playPause, .goToStart] {
+            playbackMenu.addItem(command.menuItem())
+        }
+        playbackMenu.addItem(.separator())
+        for command: EditorCommand in [.previousFrame, .nextFrame, .backOneSecond, .forwardOneSecond] {
+            playbackMenu.addItem(command.menuItem())
+        }
+        playbackMenu.addItem(.separator())
+        for command: EditorCommand in [.previousEdit, .nextEdit] {
+            playbackMenu.addItem(command.menuItem())
+        }
+        main.addItem(submenu: playbackMenu, title: "Playback")
+
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
@@ -113,6 +150,11 @@ enum MainMenu {
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         NSApp.windowsMenu = windowMenu
         main.addItem(submenu: windowMenu, title: "Window")
+
+        let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(EditorCommand.showShortcuts.menuItem())
+        NSApp.helpMenu = helpMenu
+        main.addItem(submenu: helpMenu, title: "Help")
 
         return main
     }

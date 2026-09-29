@@ -102,12 +102,13 @@ enum VideoExporter {
 
     static func export(recording: Recording, files: RecordingFiles, options: ExportOptions, to url: URL,
                        progress: @escaping @Sendable (Double) -> Void) async throws {
-        let range = CMTimeRange(start: recording.edit.trimStart.cmTime, end: recording.trimEnd.cmTime)
-        let built = try await CompositionBuilder.build(recording: recording, files: files, range: range)
+        // Trimmed and deleted parts are left out; the rest plays back to back.
+        let ranges = recording.edit.keptRanges(duration: .infinity, applyingTrim: true)
+        let built = try await CompositionBuilder.build(recording: recording, files: files, ranges: ranges)
         let canvas = LayoutEngine.canvasSize(source: built.sourceSize, aspect: recording.edit.layout.aspect)
         let size = renderSize(canvas: canvas, ratio: recording.edit.layout.aspect.ratio, options: options)
         let videoComposition = CompositionBuilder.videoComposition(for: built, recording: recording, renderSize: size,
-                                                                   timeOffset: recording.edit.trimStart, highQuality: true)
+                                                                   highQuality: true)
         try? FileManager.default.removeItem(at: url)
 
         if options.format == .gif {
@@ -120,7 +121,7 @@ enum VideoExporter {
             throw CaptureError.writerSetupFailed("This export preset isn't available.")
         }
         session.videoComposition = videoComposition
-        session.audioMix = CompositionBuilder.audioMix(for: built, settings: recording.edit.audio)
+        session.audioMix = CompositionBuilder.audioMix(for: built, edit: recording.edit)
         session.shouldOptimizeForNetworkUse = true
 
         let monitor = Task {

@@ -65,13 +65,12 @@ enum SubtitleFileFormat: String, CaseIterable, Identifiable {
 }
 
 enum SubtitleExporter {
-    /// Shifts cues onto the trimmed timeline, dropping those outside it.
-    static func cues(_ cues: [SubtitleCue], trimStart: Double, trimEnd: Double) -> [SubtitleCue] {
+    /// Moves cues onto the edited video's timeline, dropping those that were cut away.
+    static func cues(_ cues: [SubtitleCue], timeline: TimelineMap) -> [SubtitleCue] {
         cues.compactMap { cue in
-            let start = max(cue.start, trimStart)
-            let end = min(cue.end, trimEnd)
-            guard end > start else { return nil }
-            return SubtitleCue(id: cue.id, start: start - trimStart, end: end - trimStart, text: cue.text)
+            let ranges = timeline.outputRanges(forSource: cue.start..<max(cue.start, cue.end))
+            guard let first = ranges.first, let last = ranges.last else { return nil }
+            return SubtitleCue(id: cue.id, start: first.lowerBound, end: last.upperBound, text: cue.text)
         }
     }
 

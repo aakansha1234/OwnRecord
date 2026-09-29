@@ -87,13 +87,13 @@ import Testing
         defer { try? FileManager.default.removeItem(at: folder) }
         let (recording, files) = try await Self.makeRecording(folder: folder)
 
-        let built = try await CompositionBuilder.build(recording: recording, files: files, range: nil)
+        let built = try await CompositionBuilder.build(recording: recording, files: files, ranges: nil)
         #expect(built.cameraTrackID != nil)
         #expect(abs(built.duration - 2) < 0.1)
 
         let canvas = CGSize(width: 640, height: 400)
         let composition = CompositionBuilder.videoComposition(for: built, recording: recording, renderSize: canvas,
-                                                              timeOffset: 0, highQuality: true)
+                                                              highQuality: true)
         let image = try #require(await Thumbnailer.image(from: built.composition, at: 1, maxSize: canvas,
                                                          videoComposition: composition))
         #expect(image.width == 640 && image.height == 400)
@@ -154,5 +154,34 @@ import Testing
         try await VideoExporter.export(recording: recording, files: files, options: options, to: gifURL) { _ in }
         let source = try #require(CGImageSourceCreateWithURL(gifURL as CFURL, nil))
         #expect(CGImageSourceGetCount(source) >= 12)
+    }
+
+    @Test func exportsSectionsWithCutsAndHiddenScreen() async throws {
+        let folder = try Self.makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var (recording, files) = try await Self.makeRecording(folder: folder)
+        recording.edit.split(at: 0.6, duration: 2)
+        recording.edit.split(at: 1.2, duration: 2)
+        recording.edit.sections[1].isDeleted = true
+        recording.edit.sections[2].showsScreen = false
+        recording.transcript = nil
+
+        var options = ExportOptions()
+        options.resolution = .original
+        let url = folder.appendingPathComponent("sections.mp4")
+        try await VideoExporter.export(recording: recording, files: files, options: options, to: url) { _ in }
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration).seconds
+        #expect(abs(duration - 1.4) < 0.1)
+
+        // First section: red screen with the green camera in the corner.
+        let size = CGSize(width: 640, height: 400)
+        let first = try #require(await Thumbnailer.image(from: asset, at: 0.3, maxSize: size))
+        let screen = Self.pixel(first, x: 40, y: 40)
+        #expect(screen.r > 200 && screen.g < 60)
+        // Last section hides the screen, so the camera fills the frame.
+        let last = try #require(await Thumbnailer.image(from: asset, at: 1.25, maxSize: size))
+        let camera = Self.pixel(last, x: 40, y: 40)
+        #expect(camera.g > 200 && camera.r < 80)
     }
 }

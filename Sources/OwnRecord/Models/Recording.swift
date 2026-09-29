@@ -48,8 +48,6 @@ struct Recording: Codable, Identifiable, Hashable {
     var hasSystemAudio: Bool { audioTracks.contains(.system) }
     var hasAudio: Bool { !audioTracks.isEmpty }
     var pixelSize: CGSize { CGSize(width: pixelWidth, height: pixelHeight) }
-    var trimEnd: Double { edit.trimEnd ?? duration }
-    var trimmedDuration: Double { max(0, trimEnd - edit.trimStart) }
 }
 
 /// File layout of a recording folder.

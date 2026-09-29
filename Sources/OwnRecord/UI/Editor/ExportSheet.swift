@@ -73,7 +73,7 @@ struct ExportSheet: View {
     }
 
     private var summary: String {
-        "\(Int(outputSize.width)) × \(Int(outputSize.height))  ·  \(TimeFormat.clock(model.recording.trimmedDuration))  ·  \(model.recording.frameRate) fps"
+        "\(Int(outputSize.width)) × \(Int(outputSize.height))  ·  \(TimeFormat.clock(model.editedDuration))  ·  \(model.recording.frameRate) fps"
     }
 
     private func label(for resolution: ExportResolution) -> String {

@@ -118,12 +118,11 @@ final class RecorderPanelController {
     }
 }
 
-/// Hosts one recording's editor. Adds space/arrow key handling that doesn't fight text fields.
+/// Hosts one recording's editor, and handles the Timeline and Playback menu commands for it.
 @MainActor
-final class EditorWindowController: NSWindowController, NSWindowDelegate {
+final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation {
     private let model: EditorModel
     private let onClose: () -> Void
-    private var keyMonitor: Any?
 
     init(model: EditorModel, onClose: @escaping () -> Void) {
         self.model = model
@@ -134,37 +133,47 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         window.tabbingMode = .disallowed
         super.init(window: window)
         window.delegate = self
-        installKeyMonitor()
         observeContinuously({ [weak self] in _ = self?.model.recording.title },
                             onChange: { [weak self] in self?.window?.title = self?.model.recording.title ?? "" })
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    private func installKeyMonitor() {
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, let window = self.window, event.window === window,
-                  event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
-                  !(window.firstResponder is NSText), window.attachedSheet == nil else { return event }
-            switch event.keyCode {
-            case 49: // Space
-                self.model.togglePlayback()
-                return nil
-            case 123: // Left arrow
-                self.model.step(by: event.modifierFlags.contains(.shift) ? -1 : -1.0 / Double(self.model.recording.frameRate))
-                return nil
-            case 124: // Right arrow
-                self.model.step(by: event.modifierFlags.contains(.shift) ? 1 : 1.0 / Double(self.model.recording.frameRate))
-                return nil
-            default:
-                return event
-            }
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        // Start with nothing focused, so single-key shortcuts work right away instead of
+        // typing into the title field.
+        window?.makeFirstResponder(nil)
+    }
+
+    @objc func performEditorCommand(_ sender: NSMenuItem) {
+        guard acceptsEditorCommands, let command = EditorCommand(rawValue: sender.tag) else { return }
+        command.perform(on: model)
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        guard item.action == #selector(performEditorCommand(_:)), let command = EditorCommand(rawValue: item.tag) else {
+            return true
         }
+        guard acceptsEditorCommands else {
+            item.title = command.title
+            return false
+        }
+        item.title = command.title(for: model)
+        return command.isEnabled(for: model)
+    }
+
+    /// Editor shortcuts are single keys, so they're off while typing (and while a sheet is open).
+    private var acceptsEditorCommands: Bool {
+        guard let window, window.isKeyWindow, window.attachedSheet == nil, model.loadState == .ready else { return false }
+        return !(window.firstResponder is NSText)
+    }
+
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        model.undoManager
     }
 
     func windowWillClose(_ notification: Notification) {
-        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
-        keyMonitor = nil
         model.close()
         onClose()
     }

@@ -224,7 +224,13 @@ private struct CameraInspector: View {
             EmptyInspector(symbol: "video.slash", title: "No camera in this recording",
                            message: "Choose a camera in the recorder to add a speaker overlay to your next recording.")
         } else {
-            SwitchRow(title: "Show camera", isOn: $model.recording.edit.camera.isVisible)
+            let section = model.currentSection
+            SwitchRow(title: model.hasMultipleSections ? "Show camera in this section" : "Show camera",
+                      isOn: Binding(get: { section.showsCamera },
+                                    set: { if $0 != section.showsCamera { model.toggleCamera() } }))
+            if model.hasMultipleSections {
+                SectionScopeNote(model: model)
+            }
 
             Group {
                 InspectorSection("Shape") {
@@ -250,28 +256,37 @@ private struct CameraInspector: View {
                     }
                 }
 
-                InspectorSection("Position") {
-                    HStack(alignment: .top, spacing: 12) {
-                        Grid(horizontalSpacing: 6, verticalSpacing: 6) {
-                            GridRow {
-                                CornerButton(position: .topLeft, model: model)
-                                CornerButton(position: .topRight, model: model)
-                            }
-                            GridRow {
-                                CornerButton(position: .bottomLeft, model: model)
-                                CornerButton(position: .bottomRight, model: model)
-                            }
-                        }
-                        Text(model.recording.edit.camera.position == .custom
-                             ? "Custom position. Drag it in the preview, or pick a corner."
-                             : "Or drag the camera anywhere in the preview.")
+                InspectorSection(model.hasMultipleSections ? "Position in this section" : "Position") {
+                    if !section.showsScreen {
+                        Text("The screen is hidden in this section, so the camera fills the frame.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    SliderRow(title: "Size", value: $model.recording.edit.camera.size, range: 0.1...0.5)
+                    Group {
+                        HStack(alignment: .top, spacing: 12) {
+                            Grid(horizontalSpacing: 6, verticalSpacing: 6) {
+                                GridRow {
+                                    CornerButton(position: .topLeft, model: model)
+                                    CornerButton(position: .topRight, model: model)
+                                }
+                                GridRow {
+                                    CornerButton(position: .bottomLeft, model: model)
+                                    CornerButton(position: .bottomRight, model: model)
+                                }
+                            }
+                            Text(model.currentCameraPlacement.position == .custom
+                                 ? "Custom position. Drag it in the preview, or pick a corner."
+                                 : "Or drag the camera anywhere in the preview. ⌥ + arrow keys move it between corners.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        SliderRow(title: "Size", value: $model.cameraSize, range: 0.1...0.5)
+                    }
+                    .disabled(!section.showsScreen)
                     SliderRow(title: "Edge margin", value: $model.recording.edit.camera.margin, range: 0...0.1)
-                        .disabled(model.recording.edit.camera.position == .custom)
+                        .disabled(model.currentCameraPlacement.position == .custom || !section.showsScreen)
                 }
 
                 InspectorSection("Style") {
@@ -286,8 +301,8 @@ private struct CameraInspector: View {
                         .font(.system(size: 12))
                 }
             }
-            .disabled(!model.recording.edit.camera.isVisible)
-            .opacity(model.recording.edit.camera.isVisible ? 1 : 0.5)
+            .disabled(!section.showsCamera)
+            .opacity(section.showsCamera ? 1 : 0.5)
         }
     }
 }
@@ -297,9 +312,9 @@ private struct CornerButton: View {
     @Bindable var model: EditorModel
 
     var body: some View {
-        let selected = model.recording.edit.camera.position == position
+        let selected = model.currentCameraPlacement.position == position
         Button {
-            model.recording.edit.camera.position = position
+            model.setCameraCorner(position)
         } label: {
             ZStack(alignment: alignment) {
                 RoundedRectangle(cornerRadius: 5)
@@ -325,6 +340,27 @@ private struct CornerButton: View {
         case .topRight: .topTrailing
         case .bottomLeft: .bottomLeading
         default: .bottomTrailing
+        }
+    }
+}
+
+/// Explains that camera settings above apply to one section, with a way to apply them everywhere.
+private struct SectionScopeNote: View {
+    @Bindable var model: EditorModel
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "rectangle.split.3x1")
+                .foregroundStyle(.secondary)
+            Text("Visibility, position and size apply to section \(model.currentSectionIndex + 1) of \(model.sections.count).")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        if !model.cameraPlacementIsUniform {
+            Button("Use This Position Everywhere") { model.applyCameraToAllSections() }
+                .controlSize(.small)
         }
     }
 }
@@ -511,6 +547,9 @@ private struct CueRow: View {
             TextField("", text: Binding(get: { cue.text }, set: { model.updateCue(cue.id, text: $0) }), axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
+                .strikethrough(model.isCut(cue), color: .secondary)
+                .foregroundStyle(model.isCut(cue) ? .secondary : .primary)
+                .help(model.isCut(cue) ? "This part is cut from the video" : "")
 
             Button {
                 model.deleteCue(cue.id)

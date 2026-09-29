@@ -23,10 +23,15 @@ enum CompositionBuilder {
         let sourceSize: CGSize
         /// Duration of the composition in seconds.
         let duration: Double
+        /// Duration of the whole recording in seconds.
+        let sourceDuration: Double
+        /// Maps composition time to recording time.
+        let timeline: TimelineMap
     }
 
-    /// - Parameter range: Source range to include (trimmed exports). nil includes everything.
-    static func build(recording: Recording, files: RecordingFiles, range: CMTimeRange?) async throws -> Result {
+    /// - Parameter ranges: Recording-time ranges to include, played back to back (trimmed and
+    ///   deleted parts left out). nil includes everything.
+    static func build(recording: Recording, files: RecordingFiles, ranges: [Range<Double>]?) async throws -> Result {
         let screenAsset = AVURLAsset(url: files.screen)
         guard let screenVideo = try await screenAsset.loadTracks(withMediaType: .video).first else {
             throw CompositionError.missingScreenVideo
@@ -34,54 +39,76 @@ enum CompositionBuilder {
         let assetDuration = try await screenAsset.load(.duration)
         let naturalSize = try await screenVideo.load(.naturalSize)
         let fullRange = CMTimeRange(start: .zero, duration: assetDuration)
-        let timeRange = range.map { CMTimeRangeGetIntersection($0, otherRange: fullRange) } ?? fullRange
-        guard timeRange.duration.seconds > 0 else { throw CompositionError.emptyRange }
+        let timeRanges = (ranges ?? [0..<assetDuration.seconds]).compactMap { range -> CMTimeRange? in
+            let end = range.upperBound.isFinite ? range.upperBound.cmTime : assetDuration
+            let clipped = CMTimeRangeGetIntersection(CMTimeRange(start: range.lowerBound.cmTime, end: end), otherRange: fullRange)
+            return clipped.duration.seconds > 0.001 ? clipped : nil
+        }
+        guard !timeRanges.isEmpty else { throw CompositionError.emptyRange }
 
         let composition = AVMutableComposition()
         guard let screenTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
         else { throw CompositionError.missingScreenVideo }
-        try screenTrack.insertTimeRange(timeRange, of: screenVideo, at: .zero)
 
-        var cameraTrackID: CMPersistentTrackID?
+        // Keeps the asset alive while its track is inserted (tracks don't retain their asset).
+        var cameraSource: (asset: AVURLAsset, track: AVAssetTrack, range: CMTimeRange)?
         if recording.hasCamera, FileManager.default.fileExists(atPath: files.camera.path) {
             let cameraAsset = AVURLAsset(url: files.camera)
             if let cameraVideo = try? await cameraAsset.loadTracks(withMediaType: .video).first,
                let cameraRange = try? await cameraVideo.load(.timeRange) {
-                let overlap = CMTimeRangeGetIntersection(timeRange, otherRange: cameraRange)
-                if overlap.duration.seconds > 0,
-                   let track = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
-                    try track.insertTimeRange(overlap, of: cameraVideo, at: overlap.start - timeRange.start)
-                    cameraTrackID = track.trackID
-                }
+                cameraSource = (cameraAsset, cameraVideo, cameraRange)
             }
         }
+        var cameraTrack: AVMutableCompositionTrack?
 
-        var microphoneTrack: AVMutableCompositionTrack?
-        var systemTrack: AVMutableCompositionTrack?
+        var audioSources: [(track: AVAssetTrack, range: CMTimeRange, kind: AudioTrackKind)] = []
         let audioTracks = try await screenAsset.loadTracks(withMediaType: .audio).sorted { $0.trackID < $1.trackID }
         for (index, sourceTrack) in audioTracks.enumerated() where index < recording.audioTracks.count {
-            let sourceRange = try await sourceTrack.load(.timeRange)
-            let overlap = CMTimeRangeGetIntersection(timeRange, otherRange: sourceRange)
-            guard overlap.duration.seconds > 0,
-                  let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-            else { continue }
-            try track.insertTimeRange(overlap, of: sourceTrack, at: overlap.start - timeRange.start)
-            switch recording.audioTracks[index] {
-            case .microphone: microphoneTrack = track
-            case .system: systemTrack = track
+            audioSources.append((sourceTrack, try await sourceTrack.load(.timeRange), recording.audioTracks[index]))
+        }
+        var audioTargets: [AudioTrackKind: AVMutableCompositionTrack] = [:]
+
+        var cursor = CMTime.zero
+        var pieces: [TimelineMap.Piece] = []
+        for timeRange in timeRanges {
+            try screenTrack.insertTimeRange(timeRange, of: screenVideo, at: cursor)
+
+            if let cameraSource {
+                let overlap = CMTimeRangeGetIntersection(timeRange, otherRange: cameraSource.range)
+                if overlap.duration.seconds > 0 {
+                    if cameraTrack == nil {
+                        cameraTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+                    }
+                    try cameraTrack?.insertTimeRange(overlap, of: cameraSource.track, at: cursor + (overlap.start - timeRange.start))
+                }
             }
+
+            for source in audioSources {
+                let overlap = CMTimeRangeGetIntersection(timeRange, otherRange: source.range)
+                guard overlap.duration.seconds > 0 else { continue }
+                if audioTargets[source.kind] == nil {
+                    audioTargets[source.kind] = composition.addMutableTrack(withMediaType: .audio,
+                                                                            preferredTrackID: kCMPersistentTrackID_Invalid)
+                }
+                try audioTargets[source.kind]?.insertTimeRange(overlap, of: source.track, at: cursor + (overlap.start - timeRange.start))
+            }
+
+            pieces.append(TimelineMap.Piece(sourceStart: timeRange.start.seconds, sourceEnd: timeRange.end.seconds,
+                                            outputStart: cursor.seconds))
+            cursor = cursor + timeRange.duration
         }
 
-        return Result(composition: composition, screenTrackID: screenTrack.trackID, cameraTrackID: cameraTrackID,
-                      microphoneTrack: microphoneTrack, systemTrack: systemTrack,
-                      sourceSize: naturalSize, duration: timeRange.duration.seconds)
+        return Result(composition: composition, screenTrackID: screenTrack.trackID, cameraTrackID: cameraTrack?.trackID,
+                      microphoneTrack: audioTargets[.microphone], systemTrack: audioTargets[.system],
+                      sourceSize: naturalSize, duration: cursor.seconds, sourceDuration: assetDuration.seconds,
+                      timeline: TimelineMap(pieces: pieces))
     }
 
     static func videoComposition(for result: Result, recording: Recording, renderSize: CGSize,
-                                 timeOffset: Double, highQuality: Bool) -> AVMutableVideoComposition {
+                                 highQuality: Bool) -> AVMutableVideoComposition {
         let state = RenderState(edit: recording.edit,
                                 cues: recording.transcript?.cues ?? [],
-                                timeOffset: timeOffset,
+                                timeline: result.timeline,
                                 sourceSize: result.sourceSize,
                                 hasCamera: result.cameraTrackID != nil,
                                 highQuality: highQuality)
@@ -97,20 +124,50 @@ enum CompositionBuilder {
         return composition
     }
 
-    static func audioMix(for result: Result, settings: AudioMixSettings) -> AVAudioMix {
+    /// Track volumes, silenced during sections with muted audio.
+    static func audioMix(for result: Result, edit: EditSettings) -> AVAudioMix {
+        let muted = mutedRanges(edit: edit, timeline: result.timeline)
         let mix = AVMutableAudioMix()
         var parameters: [AVMutableAudioMixInputParameters] = []
-        if let track = result.microphoneTrack {
+        for (track, volume) in [(result.microphoneTrack, edit.audio.microphoneVolume), (result.systemTrack, edit.audio.systemVolume)] {
+            guard let track else { continue }
             let input = AVMutableAudioMixInputParameters(track: track)
-            input.setVolume(Float(settings.microphoneVolume), at: .zero)
-            parameters.append(input)
-        }
-        if let track = result.systemTrack {
-            let input = AVMutableAudioMixInputParameters(track: track)
-            input.setVolume(Float(settings.systemVolume), at: .zero)
+            for change in volumeChanges(volume: Float(volume), muted: muted) {
+                input.setVolume(change.volume, at: change.time.cmTime)
+            }
             parameters.append(input)
         }
         mix.inputParameters = parameters
         return mix
+    }
+
+    /// Composition-time ranges where audio is muted.
+    static func mutedRanges(edit: EditSettings, timeline: TimelineMap) -> [Range<Double>] {
+        var ranges: [Range<Double>] = []
+        for index in edit.sections.indices where edit.sections[index].mutesAudio && !edit.sections[index].isDeleted {
+            let source = edit.range(ofSectionAt: index, duration: .greatestFiniteMagnitude)
+            for range in timeline.outputRanges(forSource: source) {
+                if let last = ranges.last, abs(last.upperBound - range.lowerBound) < 1e-6 {
+                    ranges[ranges.count - 1] = last.lowerBound..<range.upperBound
+                } else {
+                    ranges.append(range)
+                }
+            }
+        }
+        return ranges
+    }
+
+    /// Volume steps for a track: `volume`, dropping to silence over each muted range.
+    static func volumeChanges(volume: Float, muted: [Range<Double>]) -> [(time: Double, volume: Float)] {
+        var changes: [(time: Double, volume: Float)] = [(0, volume)]
+        for range in muted {
+            if let last = changes.last, abs(last.time - range.lowerBound) < 1e-6 {
+                changes[changes.count - 1].volume = 0
+            } else {
+                changes.append((range.lowerBound, 0))
+            }
+            changes.append((range.upperBound, volume))
+        }
+        return changes
     }
 }

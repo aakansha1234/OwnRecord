@@ -135,8 +135,9 @@ enum CameraPosition: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// The camera overlay's look. Visibility and placement can change per section (`TimelineSection`);
+/// the placement here is the default, taken from where the bubble was during recording.
 struct CameraOverlayStyle: Codable, Hashable {
-    var isVisible = true
     var shape: CameraShape = .circle
     /// Overlay height as a fraction of the canvas' shorter side.
     var size: Double = 0.26
@@ -186,8 +187,34 @@ struct EditSettings: Codable, Hashable {
     var trimStart: Double = 0
     /// nil means "until the end of the recording".
     var trimEnd: Double?
+    /// Sorted by start; the first starts at 0. Never empty.
+    var sections = [TimelineSection(start: 0)]
     var layout = LayoutStyle()
     var camera = CameraOverlayStyle()
     var subtitles = SubtitleStyle()
     var audio = AudioMixSettings()
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        trimStart = try container.decodeIfPresent(Double.self, forKey: .trimStart) ?? 0
+        trimEnd = try container.decodeIfPresent(Double.self, forKey: .trimEnd)
+        layout = try container.decodeIfPresent(LayoutStyle.self, forKey: .layout) ?? LayoutStyle()
+        camera = try container.decodeIfPresent(CameraOverlayStyle.self, forKey: .camera) ?? CameraOverlayStyle()
+        subtitles = try container.decodeIfPresent(SubtitleStyle.self, forKey: .subtitles) ?? SubtitleStyle()
+        audio = try container.decodeIfPresent(AudioMixSettings.self, forKey: .audio) ?? AudioMixSettings()
+        if let sections = try container.decodeIfPresent([TimelineSection].self, forKey: .sections) {
+            self.sections = sections
+        } else {
+            // Recordings edited before sections existed had one camera switch for the whole video.
+            let legacy = try container.decodeIfPresent(LegacyCameraVisibility.self, forKey: .camera)
+            sections[0].showsCamera = legacy?.isVisible ?? true
+        }
+        normalizeSections()
+    }
+
+    private struct LegacyCameraVisibility: Decodable {
+        var isVisible: Bool?
+    }
 }

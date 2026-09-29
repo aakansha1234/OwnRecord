@@ -160,7 +160,7 @@ private struct RecordingCard: View {
             .aspectRatio(16.0 / 10.0, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(alignment: .bottomTrailing) {
-                Text(TimeFormat.clock(recording.trimmedDuration))
+                Text(TimeFormat.clock(recording.editedDuration))
                     .font(.system(size: 11, weight: .semibold).monospacedDigit())
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)

@@ -5,8 +5,8 @@ import CoreImage.CIFilterBuiltins
 struct RenderState {
     var edit: EditSettings
     var cues: [SubtitleCue]
-    /// Added to composition time to get recording (source) time, e.g. the trim start on export.
-    var timeOffset: Double
+    /// Maps composition time back to recording time (sections and subtitles use recording time).
+    var timeline: TimelineMap
     var sourceSize: CGSize
     var hasCamera: Bool
     /// Use Lanczos downscaling (slower, sharper text). Enabled for exports.
@@ -15,47 +15,52 @@ struct RenderState {
 
 /// Composes screen, camera and subtitles into one frame with Core Image.
 enum FrameRenderer {
-    static func render(screen: CIImage?, camera: CIImage?, sourceTime: Double, state: RenderState, canvas: CGSize) -> CIImage {
+    static func render(screen: CIImage?, camera: CIImage?, outputTime: Double, state: RenderState, canvas: CGSize) -> CIImage {
+        let sourceTime = state.timeline.sourceTime(forOutput: outputTime)
         let layout = LayoutEngine.layout(canvas: canvas, source: state.sourceSize, edit: state.edit,
-                                         hasCamera: state.hasCamera && camera != nil)
+                                         hasCamera: state.hasCamera && camera != nil, at: sourceTime,
+                                         timeline: state.timeline)
         let bounds = CGRect(origin: .zero, size: canvas)
         let minSide = min(canvas.width, canvas.height)
         var output = background(state.edit.layout.background, canvas: canvas)
 
-        if let screen {
+        if let screen, layout.screenOpacity > 0.001 {
             let target = flipped(layout.screenRect, canvasHeight: canvas.height)
             var content = place(screen, in: target, highQuality: state.highQuality)
             if layout.screenCornerRadius > 0.5 {
                 content = masked(content, rect: target, radius: layout.screenCornerRadius)
             }
             if state.edit.layout.shadow > 0, state.edit.layout.padding > 0.001 {
-                let strength = CGFloat(state.edit.layout.shadow)
+                let strength = CGFloat(state.edit.layout.shadow) * layout.screenOpacity
                 output = shadow(rect: target, radius: layout.screenCornerRadius, blur: minSide * 0.025,
                                 opacity: 0.55 * strength, offsetY: minSide * 0.012).composited(over: output)
             }
-            output = content.composited(over: output)
+            output = faded(content, layout.screenOpacity).composited(over: output)
         }
 
-        if let camera, let rect = layout.cameraRect {
+        if let camera, let frame = layout.camera, frame.opacity > 0.001 {
             let style = state.edit.camera
+            let rect = frame.rect
             let target = flipped(rect, canvasHeight: canvas.height)
-            let radius = layout.cameraCornerRadius
-            if style.shadow {
-                output = shadow(rect: target, radius: radius, blur: rect.height * 0.06, opacity: 0.45,
-                                offsetY: rect.height * 0.025).composited(over: output)
+            let radius = frame.cornerRadius
+            var overlay = CIImage.empty()
+            let coversCanvas = rect.insetBy(dx: -1, dy: -1).contains(bounds)
+            if style.shadow, !coversCanvas {
+                overlay = shadow(rect: target, radius: radius, blur: min(rect.height * 0.06, minSide * 0.03), opacity: 0.45,
+                                 offsetY: min(rect.height * 0.025, minSide * 0.012))
             }
-            let border = CGFloat(style.borderWidth) * rect.height
             var inner = target
             var innerRadius = radius
-            if border > 0.5 {
-                output = roundedRect(target, radius: radius, color: style.borderColor.ciColor).composited(over: output)
-                inner = target.insetBy(dx: border, dy: border)
-                innerRadius = max(0, radius - border)
+            if frame.borderWidth > 0.5 {
+                overlay = roundedRect(target, radius: radius, color: style.borderColor.ciColor).composited(over: overlay)
+                inner = target.insetBy(dx: frame.borderWidth, dy: frame.borderWidth)
+                innerRadius = max(0, radius - frame.borderWidth)
             }
             var feed = aspectFillCrop(camera, to: inner.size)
             if style.mirror { feed = mirrored(feed) }
-            feed = masked(place(feed, in: inner, highQuality: false), rect: inner, radius: innerRadius)
-            output = feed.composited(over: output)
+            feed = masked(place(feed, in: inner, highQuality: state.highQuality && frame.fillsStage), rect: inner, radius: innerRadius)
+            overlay = feed.composited(over: overlay)
+            output = faded(overlay, frame.opacity).composited(over: output)
         }
 
         if state.edit.subtitles.isEnabled,
@@ -126,6 +131,14 @@ enum FrameRenderer {
             crop = CGRect(x: extent.minX, y: extent.midY - height / 2, width: extent.width, height: height)
         }
         return image.cropped(to: crop)
+    }
+
+    /// Multiplies the image's alpha (for fades).
+    static func faded(_ image: CIImage, _ opacity: CGFloat) -> CIImage {
+        guard opacity < 0.999 else { return image }
+        return image.applyingFilter("CIColorMatrix", parameters: [
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: max(0, opacity)),
+        ])
     }
 
     static func mirrored(_ image: CIImage) -> CIImage {

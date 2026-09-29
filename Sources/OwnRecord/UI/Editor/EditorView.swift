@@ -41,6 +41,7 @@ private struct EditorHeader: View {
             Spacer().frame(width: 64)
             VStack(alignment: .leading, spacing: 1) {
                 TextField("Title", text: $model.recording.title)
+                    .onSubmit { endTextEditing() }
                     .textFieldStyle(.plain)
                     .font(.system(size: 14, weight: .semibold))
                     .frame(maxWidth: 420)
@@ -82,7 +83,7 @@ private struct EditorHeader: View {
     private var subtitle: String {
         let recording = model.recording
         return [recording.createdAt.formatted(date: .abbreviated, time: .shortened),
-                TimeFormat.clock(recording.trimmedDuration),
+                TimeFormat.clock(model.loadState == .ready ? model.editedDuration : recording.editedDuration),
                 "\(recording.pixelWidth) × \(recording.pixelHeight)",
                 recording.sourceName].joined(separator: "  ·  ")
     }
@@ -103,9 +104,21 @@ private struct PreviewStage: View {
                     .background(Color.black)
                     .shadow(color: .black.opacity(0.3), radius: 16, y: 6)
                     .position(x: stage.midX, y: stage.midY)
+                    .onTapGesture { endTextEditing() }
 
-                if model.loadState == .ready, model.hasCameraTrack, model.recording.edit.camera.isVisible {
+                let section = model.currentSection
+                if model.loadState == .ready, section.isDeleted, !model.isPlaying {
+                    DeletedSectionOverlay(model: model)
+                        .frame(width: stage.width, height: stage.height)
+                        .position(x: stage.midX, y: stage.midY)
+                } else if model.loadState == .ready, model.hasCameraTrack, section.showsCamera, section.showsScreen {
                     CameraDragHandle(model: model, stage: stage)
+                }
+
+                if let hint = model.hint {
+                    HintView(model: model, hint: hint)
+                        .frame(width: geometry.size.width)
+                        .position(x: geometry.size.width / 2, y: max(28, stage.minY + 30))
                 }
 
                 switch model.loadState {
@@ -140,7 +153,7 @@ private struct CameraDragHandle: View {
     var body: some View {
         let canvas = model.canvasSize
         let scale = stage.width / max(canvas.width, 1)
-        let style = model.recording.edit.camera
+        let style = model.recording.edit.camera.with(model.currentCameraPlacement)
         let rect = LayoutEngine.cameraRect(style: style, canvas: canvas)
         let frame = CGRect(x: stage.minX + rect.minX * scale, y: stage.minY + rect.minY * scale,
                            width: rect.width * scale, height: rect.height * scale)
@@ -169,10 +182,12 @@ private struct CameraDragHandle: View {
                     }
                     .onEnded { _ in
                         dragOrigin = nil
-                        model.snapCamera()
+                        model.finishMovingCamera()
                     }
             )
-            .help("Drag to move the camera. Release near a corner to snap.")
+            .help(model.hasMultipleSections
+                  ? "Drag to move the camera in this section. Release near a corner to snap."
+                  : "Drag to move the camera. Release near a corner to snap.")
     }
 }
 
@@ -220,12 +235,12 @@ private struct TransportBar: View {
     var body: some View {
         HStack(spacing: 14) {
             Button {
-                model.seek(to: model.trimStart)
+                model.goToStart()
             } label: {
                 Image(systemName: "backward.end.fill")
             }
             .buttonStyle(.borderless)
-            .help("Go to start")
+            .help("Go to start (Home)")
             .accessibilityLabel("Go to Start")
 
             Button {
@@ -240,26 +255,210 @@ private struct TransportBar: View {
             .help("Play/Pause (Space)")
             .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
 
-            Text("\(TimeFormat.precise(max(0, model.currentTime - model.trimStart))) / \(TimeFormat.precise(model.trimEnd - model.trimStart))")
+            Text("\(TimeFormat.precise(model.editedTime)) / \(TimeFormat.precise(model.editedDuration))")
                 .font(.system(size: 12, weight: .medium).monospacedDigit())
                 .foregroundStyle(.secondary)
 
-            Spacer()
+            Spacer(minLength: 8)
 
             if model.isTrimmed {
-                Label("Trimmed \(TimeFormat.precise(model.trimStart)) – \(TimeFormat.precise(model.trimEnd))", systemImage: "scissors")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
                 Button("Reset Trim") { model.resetTrim() }
                     .controlSize(.small)
-            } else {
-                Text("Drag the yellow handles to trim")
+                    .help("Trimmed \(TimeFormat.precise(model.trimStart)) – \(TimeFormat.precise(model.trimEnd))")
+            }
+            if model.hasMultipleSections {
+                Text("Section \(model.currentSectionIndex + 1) of \(model.sections.count)")
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            } else if !model.isTrimmed {
+                Text("Press S to split")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
+                    .fixedSize()
             }
+            SectionToolbar(model: model)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+    }
+}
+
+/// Split, delete and per-section visibility controls. They act on the section under the playhead.
+private struct SectionToolbar: View {
+    @Bindable var model: EditorModel
+
+    var body: some View {
+        let section = model.currentSection
+        HStack(spacing: 2) {
+            ToolButton(model: model, command: .split, symbol: "scissors")
+            ToolButton(model: model, command: .deleteSection,
+                       symbol: section.isDeleted ? "arrow.uturn.backward" : "trash", isOff: section.isDeleted)
+            Divider().frame(height: 18).padding(.horizontal, 5)
+            ToolButton(model: model, command: .toggleScreen,
+                       symbol: section.showsScreen ? "display" : "rectangle.slash", isOff: !section.showsScreen)
+            if model.hasCameraTrack {
+                ToolButton(model: model, command: .toggleCamera,
+                           symbol: section.showsCamera ? "video" : "video.slash", isOff: !section.showsCamera)
+            }
+            if model.recording.hasAudio {
+                ToolButton(model: model, command: .toggleAudio,
+                           symbol: section.mutesAudio ? "speaker.slash" : "speaker.wave.2", isOff: section.mutesAudio)
+            }
+            Divider().frame(height: 18).padding(.horizontal, 5)
+            ToolButton(model: model, command: .showShortcuts, symbol: "keyboard")
+                .popover(isPresented: $model.isShortcutsPresented, arrowEdge: .bottom) {
+                    ShortcutsView()
+                }
+        }
+        .disabled(model.loadState != .ready)
+    }
+}
+
+private struct ToolButton: View {
+    @Bindable var model: EditorModel
+    let command: EditorCommand
+    let symbol: String
+    var isOff = false
+    @State private var hovering = false
+
+    var body: some View {
+        let title = command.title(for: model)
+        Button {
+            command.perform(on: model)
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 30, height: 26)
+                .foregroundStyle(isOff ? Color.orange : Color.primary)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isOff ? Color.orange.opacity(0.16) : Color.primary.opacity(hovering ? 0.08 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .disabled(!command.isEnabled(for: model))
+        .help(command.shortcutLabel.map { "\(title) (\($0))" } ?? title)
+        .accessibilityLabel(title)
+    }
+}
+
+/// Keyboard shortcut reference, built from the editor's commands.
+struct ShortcutsView: View {
+    private let extras: [(title: String, shortcut: String)] = [
+        ("Undo", "⌘Z"), ("Redo", "⇧⌘Z"), ("Export", "⌘E"), ("Keyboard shortcuts", "⌘/"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Keyboard Shortcuts")
+                .font(.system(size: 13, weight: .semibold))
+            Text("Section commands apply to the section under the playhead.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 28) {
+                VStack(alignment: .leading, spacing: 14) {
+                    group(.sections)
+                    group(.camera)
+                }
+                VStack(alignment: .leading, spacing: 14) {
+                    group(.playback)
+                    group(.trim)
+                    VStack(alignment: .leading, spacing: 5) {
+                        header("General")
+                        ForEach(extras, id: \.title) { row($0.title, $0.shortcut) }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .frame(width: 560)
+    }
+
+    private func group(_ group: EditorCommand.Group) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            header(group.rawValue)
+            ForEach(EditorCommand.allCases.filter { $0.group == group && $0.shortcutLabel != nil && $0 != .showShortcuts },
+                    id: \.self) { command in
+                row(command.summary, command.shortcutLabel ?? "")
+            }
+        }
+    }
+
+    private func header(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 10, weight: .semibold))
+            .tracking(0.5)
+            .foregroundStyle(.secondary)
+    }
+
+    private func row(_ title: String, _ shortcut: String) -> some View {
+        HStack {
+            Text(title).font(.system(size: 12))
+            Spacer(minLength: 16)
+            Text(shortcut)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
+        }
+        .frame(width: 250)
+    }
+}
+
+// MARK: - Section overlays
+
+private struct DeletedSectionOverlay: View {
+    @Bindable var model: EditorModel
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.62)
+            VStack(spacing: 8) {
+                Image(systemName: "trash")
+                    .font(.system(size: 22, weight: .medium))
+                Text("This section is deleted")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("It won't appear in the video.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.7))
+                Button("Restore Section") { model.toggleDeleted() }
+                    .controlSize(.regular)
+                    .padding(.top, 4)
+                    .help("Restore (⌫)")
+            }
+            .foregroundStyle(.white)
+        }
+        .environment(\.colorScheme, .dark)
+    }
+}
+
+private struct HintView: View {
+    @Bindable var model: EditorModel
+    let hint: EditorModel.Hint
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "info.circle.fill").foregroundStyle(.secondary)
+            Text(hint.message)
+                .font(.system(size: 12, weight: .medium))
+            if hint.offersApplyToAll {
+                Button("Use Everywhere") { model.applyCameraToAllSections() }
+                    .controlSize(.small)
+                    .help("Use this camera position and size in every section")
+            }
+            Button {
+                model.dismissHint()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Dismiss")
+        }
+        .statusCapsule()
+        .id(hint.id)
     }
 }
 

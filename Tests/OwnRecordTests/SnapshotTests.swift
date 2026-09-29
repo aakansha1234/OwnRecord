@@ -79,5 +79,27 @@ struct SnapshotTests {
             try await snapshot(EditorView(model: model), size: CGSize(width: 1320, height: 820), name: "editor-\(tab.rawValue)")
             model.close()
         }
+
+        // Three sections: normal, deleted, and one that hides the screen.
+        recording.edit.split(at: 0.6, duration: 2)
+        recording.edit.split(at: 1.2, duration: 2)
+        recording.edit.sections[1].isDeleted = true
+        recording.edit.sections[2].showsScreen = false
+        recording.edit.sections[2].mutesAudio = true
+        for (name, time) in [("editor-sections", 1.7), ("editor-deleted-section", 0.9)] {
+            let model = EditorModel(recording: recording, files: files, library: library, preferences: Preferences.shared)
+            await model.load()
+            model.inspectorTab = .camera
+            model.seek(to: time)
+            try await Task.sleep(for: .milliseconds(300))
+            try await snapshot(EditorView(model: model), size: CGSize(width: 1320, height: 820), name: name)
+            model.close()
+        }
+        let model = EditorModel(recording: recording, files: files, library: library, preferences: Preferences.shared)
+        await model.load()
+        model.isShortcutsPresented = false
+        try await snapshot(ShortcutsView().background(Color(nsColor: .windowBackgroundColor)),
+                           size: CGSize(width: 600, height: 440), name: "editor-shortcuts")
+        model.close()
     }
 }

@@ -158,12 +158,12 @@ private func seconds(_ value: Double) -> CMTime { CMTime(seconds: value, preferr
     @Test func trimShiftsAndClipsCues() {
         let cues = [SubtitleCue(start: 0, end: 2, text: "a"), SubtitleCue(start: 4, end: 6, text: "b"),
                     SubtitleCue(start: 9, end: 12, text: "c")]
-        let trimmed = SubtitleExporter.cues(cues, trimStart: 1, trimEnd: 10)
+        let trimmed = SubtitleExporter.cues(cues, timeline: TimelineMap(ranges: [1..<10]))
         #expect(trimmed.map(\.text) == ["a", "b", "c"])
         #expect(trimmed[0].start == 0 && trimmed[0].end == 1)
         #expect(trimmed[1].start == 3)
         #expect(trimmed[2].end == 9)
-        #expect(SubtitleExporter.cues(cues, trimStart: 6.5, trimEnd: 8).isEmpty)
+        #expect(SubtitleExporter.cues(cues, timeline: TimelineMap(ranges: [6.5..<8])).isEmpty)
     }
 
     @Test func rendersSubtitleImage() throws {

@@ -76,8 +76,7 @@ final class OverlayCompositor: NSObject, AVVideoCompositing, @unchecked Sendable
             .flatMap { request.sourceFrame(byTrackID: $0) }
             .map { CIImage(cvPixelBuffer: $0) }
         let size = request.renderContext.size
-        let sourceTime = request.compositionTime.seconds + instruction.state.timeOffset
-        let image = FrameRenderer.render(screen: screen, camera: camera, sourceTime: sourceTime,
+        let image = FrameRenderer.render(screen: screen, camera: camera, outputTime: request.compositionTime.seconds,
                                          state: instruction.state, canvas: size)
         CVBufferSetAttachment(output, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, .shouldPropagate)
         CVBufferSetAttachment(output, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_709_2, .shouldPropagate)

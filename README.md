@@ -37,6 +37,14 @@ and the Speech framework. Requires macOS 15 or later.
 
 **Editor & export**
 - Trim with a filmstrip timeline, frame stepping (← →), Space to play/pause.
+- **Split the recording into sections** (S) and edit each one: **delete** it (⌫, press again to
+  restore), **hide the screen** (H; the camera then fills the frame), **hide the camera** (C),
+  **move the camera** for that section (drag it, or ⌥ + arrow keys between corners), or
+  **mute** it (M). Layout changes between sections animate smoothly, and deleted parts are
+  skipped seamlessly in playback and export.
+- Everything is keyboard-driven and in the **Timeline** and **Playback** menus: ↑ ↓ jump between
+  splits, I / O trim to the playhead, ⌘Z / ⇧⌘Z undo and redo every edit, ⌘/ shows all shortcuts.
+  Right-click a section on the timeline for more (join, reset, camera position).
 - Screen Studio-style framing: **backgrounds** (gradients), padding, rounded corners, shadow.
 - **Aspect ratios** for any platform: Auto, 16:9, 9:16 (Reels/TikTok/Shorts), 1:1, 4:3.
 - Per-track volume for microphone and system audio.
@@ -97,7 +105,8 @@ Sources/OwnRecord
 ├── Transcription/  Speech-framework engine, cue builder, SRT/VTT export
 ├── Export/         video + GIF export
 ├── Library/        on-disk recording store, thumbnails
-├── Models/         Recording, EditSettings (layout/camera/subtitles/audio), Transcript
+├── Models/         Recording, EditSettings (layout/camera/subtitles/audio), timeline sections
+│                   and the source ↔ edited time map, Transcript
 ├── Support/        preferences, permissions, hot keys, panels, helpers
 └── UI/             Home (library), Recorder panel, Overlays (bubble, controls, countdown,
                     area selection), Editor, Settings
@@ -110,8 +119,8 @@ what you see is what you export.
 ## Roadmap ideas
 
 - **Auto-zoom on clicks** and smoothed/enlarged cursor (Screen Studio's signature feature).
-- Cut/split in the middle of a recording, speed changes, **remove silences and filler words**
-  from the transcript (text-based editing).
+- Speed changes per section, **remove silences and filler words** from the transcript
+  (text-based editing), zoom into a region for a section.
 - Animated word-by-word captions; subtitle **translation** (Translation framework).
 - AI title, summary and chapters (Apple Foundation Models on macOS 26, or a cloud LLM).
 - Camera background blur/replacement (Vision person segmentation), voice noise reduction.
