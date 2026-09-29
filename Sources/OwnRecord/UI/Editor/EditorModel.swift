@@ -227,7 +227,8 @@ final class EditorModel {
     private func observePlayer() {
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
-                guard let self, self.isPlaying, !self.isReplacingItem else { return }
+                // After a seek that interrupted playback, the player's time catches up later.
+                guard let self, self.isPlaying, !self.isReplacingItem, !self.seekedWhilePlaying else { return }
                 self.currentTime = self.previewTimeline.sourceTime(forOutput: time.seconds)
             }
         }
