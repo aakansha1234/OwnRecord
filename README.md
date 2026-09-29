@@ -34,8 +34,9 @@ and the Speech framework. Requires macOS 15 or later.
   It covers every audible track (your mic and system audio), normalizes quiet audio, and splits
   long recordings at quiet moments so words are never cut.
 - Editable transcript (click a line to jump there), subtitle lane on the timeline.
-- Styled, burned-in subtitles (position, size, weight, text/background color). They avoid
-  the camera overlay automatically.
+- Styled, burned-in subtitles (position, size, weight, text/background color, outline around
+  the letters, shadow). They avoid the camera overlay automatically. Sections can have a style
+  of their own, e.g. to restyle the subtitles from some point on.
 - Export **SRT / VTT / TXT**, copy transcript. Optionally generated automatically after each
   recording.
 
@@ -77,10 +78,17 @@ and the Speech framework. Requires macOS 15 or later.
   camera, subtitle and audio settings), `frame` (a still to check an edit) and `export` (MP4,
   MOV, GIF, iMovie clips). `--json` on any command gives machine-readable output; `ownrecord help`
   explains everything.
-- Turn it on in **Settings › Command Line** (off by default), where **Install…** puts the
-  command in `/usr/local/bin`. The app does the work (and is started in the background if
-  needed), so recordings use its permissions and show the usual controls, and edits made while
-  a recording is open in the editor can be undone there. Only apps running as you can use it.
+- `ownrecord mcp` is an MCP server, so AI apps such as Claude Desktop, ChatGPT or Cursor can do
+  the same: 14 tools to record, list, inspect, transcribe, edit (cuts, trim, blur, layout, camera
+  and subtitle settings, also from a point in time) and export, plus `get_frame`, which returns a
+  frame as an image the AI can look at. Long exports and transcriptions report progress, and
+  deleting or discarding are separate tools so apps can ask first. It speaks MCP 2026-07-28 and
+  the earlier `initialize`-based versions.
+- Turn it on in **Settings › Command Line & AI Apps** (off by default), where **Install…** puts
+  the command in `/usr/local/bin` and **Copy Configuration** copies the MCP server setting for an
+  AI app. The app does the work (and is started in the background if needed), so recordings use
+  its permissions and show the usual controls, and edits made while a recording is open in the
+  editor can be undone there. Only apps running as you can use it.
 
 ```sh
 ownrecord record --window Simulator --countdown 0 --duration 20 --wait
@@ -90,7 +98,17 @@ ownrecord silences latest --delete
 ownrecord blur latest --rect 0.62,0.08,0.3,0.05 --from 12 --to 20
 ownrecord frame latest --at 10 -o check.png
 ownrecord export latest -o demo.mp4
+ownrecord set latest subtitles.outlineWidth=0.12 subtitles.shadow=false --from 30   # restyle from 0:30
 ```
+
+To use it from Claude Desktop, add this to `claude_desktop_config.json` (Settings › Developer ›
+Edit Config), or paste what **Copy Configuration** gives you:
+
+```json
+{ "mcpServers": { "ownrecord": { "command": "/Applications/OwnRecord.app/Contents/MacOS/OwnRecord", "args": ["mcp"] } } }
+```
+
+In Claude Code: `claude mcp add ownrecord -- ownrecord mcp`.
 
 ## Build & run
 
@@ -133,8 +151,8 @@ composite them with the real compositor, and export MP4 and GIF. Scratch files g
 ```
 Sources/OwnRecord
 ├── App/            entry point, AppModel (composition root), menus, status item, windows
-├── Automation/     the `ownrecord` tool (the app's executable under that name), the socket
-│                   server it talks to, and the commands it runs in the app
+├── Automation/     the `ownrecord` tool (the app's executable under that name) and its MCP
+│                   server, the socket server they talk to, and the commands it runs in the app
 ├── Capture/        RecordingController (state machine), ScreenCaptureKit session, camera &
 │                   mic capture, MovieWriter (AVAssetWriter), RecordingClock (pause-aware timeline)
 ├── Rendering/      LayoutEngine (pure geometry), FrameRenderer (Core Image), custom

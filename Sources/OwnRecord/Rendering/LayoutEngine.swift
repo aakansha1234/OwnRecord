@@ -85,13 +85,14 @@ enum LayoutEngine {
             }
         }
 
-        let fontSize = max(8, CGFloat(edit.subtitles.fontScale) * minSide)
+        let subtitles = edit.subtitleStyle(at: time)
+        let fontSize = max(8, CGFloat(subtitles.fontScale) * minSide)
         let margin = canvas.height * 0.06
         var halfWidth = canvas.width * 0.42
         if let camera, !camera.fillsStage, camera.opacity > 0.5 {
             // Keep subtitles clear of a camera overlay that shares their band.
             let bandHeight = fontSize * 2.8
-            let band = edit.subtitles.position == .bottom
+            let band = subtitles.position == .bottom
                 ? CGRect(x: 0, y: canvas.height - margin - bandHeight, width: canvas.width, height: bandHeight)
                 : CGRect(x: 0, y: margin, width: canvas.width, height: bandHeight)
             let rect = camera.rect

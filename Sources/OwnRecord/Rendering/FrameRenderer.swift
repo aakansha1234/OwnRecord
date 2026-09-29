@@ -101,14 +101,15 @@ enum FrameRenderer {
 
     /// Draws the subtitle playing at `sourceTime` over `image`, if subtitles are on.
     private static func subtitled(_ image: CIImage, at sourceTime: Double, layout: CanvasLayout, state: RenderState) -> CIImage {
-        guard state.edit.subtitles.isEnabled,
+        let style = state.edit.subtitleStyle(at: sourceTime)
+        guard style.isEnabled,
               let cue = state.cues.first(where: { sourceTime >= $0.start && sourceTime < $0.end }),
-              let text = SubtitleRenderer.shared.image(text: cue.text, style: state.edit.subtitles,
+              let text = SubtitleRenderer.shared.image(text: cue.text, style: style,
                                                        fontSize: layout.subtitleFontSize, maxWidth: layout.subtitleMaxWidth)
         else { return image }
         let canvas = layout.canvas
         let x = ((canvas.width - text.extent.width) / 2).rounded()
-        let y = state.edit.subtitles.position == .bottom
+        let y = style.position == .bottom
             ? layout.subtitleMargin
             : canvas.height - layout.subtitleMargin - text.extent.height
         return text.transformed(by: CGAffineTransform(translationX: x, y: y.rounded())).composited(over: image)

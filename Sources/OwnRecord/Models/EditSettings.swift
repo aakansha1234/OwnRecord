@@ -162,6 +162,7 @@ enum SubtitlePosition: String, Codable, CaseIterable, Identifiable {
     var title: String { rawValue.capitalized }
 }
 
+/// How subtitles look. The recording has one style; sections can have their own (`TimelineSection`).
 struct SubtitleStyle: Codable, Hashable {
     /// Whether subtitles are rendered into the preview and burned into exports.
     var isEnabled = true
@@ -171,6 +172,27 @@ struct SubtitleStyle: Codable, Hashable {
     var textColor: RGBAColor = .white
     var backgroundColor: RGBAColor = RGBAColor.black.withAlpha(0.62)
     var bold = true
+    /// Thickness of the outline around each letter, as a fraction of the font size. 0 for none.
+    var outlineWidth: Double = 0
+    var outlineColor: RGBAColor = .black
+    /// A soft shadow behind the text when there's no background.
+    var shadow = true
+}
+
+extension SubtitleStyle {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = SubtitleStyle()
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? defaults.isEnabled
+        fontScale = try container.decodeIfPresent(Double.self, forKey: .fontScale) ?? defaults.fontScale
+        position = try container.decodeIfPresent(SubtitlePosition.self, forKey: .position) ?? defaults.position
+        textColor = try container.decodeIfPresent(RGBAColor.self, forKey: .textColor) ?? defaults.textColor
+        backgroundColor = try container.decodeIfPresent(RGBAColor.self, forKey: .backgroundColor) ?? defaults.backgroundColor
+        bold = try container.decodeIfPresent(Bool.self, forKey: .bold) ?? defaults.bold
+        outlineWidth = try container.decodeIfPresent(Double.self, forKey: .outlineWidth) ?? defaults.outlineWidth
+        outlineColor = try container.decodeIfPresent(RGBAColor.self, forKey: .outlineColor) ?? defaults.outlineColor
+        shadow = try container.decodeIfPresent(Bool.self, forKey: .shadow) ?? defaults.shadow
+    }
 }
 
 // MARK: - Audio

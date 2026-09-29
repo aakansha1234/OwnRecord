@@ -248,6 +248,10 @@ struct SetParams: Codable {
     var recording: String
     /// Setting paths like "layout.aspect" and their values, as JSON or plain text.
     var values: [String: String]
+    /// Recording time. With `from` or `to`, subtitle settings change only there: those sections
+    /// get a subtitle style of their own.
+    var from: Double?
+    var to: Double?
 }
 
 struct TranscribeParams: Codable {
@@ -389,6 +393,8 @@ struct RecordingDetails: Codable {
         var showsCamera: Bool
         var muted: Bool
         var blurs: [Blur]
+        /// The section's own subtitle style; nil when it uses the recording's.
+        var subtitles: SubtitleStyle?
     }
 
     struct Blur: Codable {

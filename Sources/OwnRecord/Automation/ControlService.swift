@@ -151,7 +151,8 @@ final class ControlService {
                 videoStart: played.first?.lowerBound, videoEnd: played.last?.upperBound,
                 deleted: section.isDeleted, showsScreen: section.showsScreen, showsCamera: section.showsCamera,
                 muted: section.mutesAudio,
-                blurs: section.redactions.map { RecordingDetails.Blur(id: $0.id, style: $0.style, rect: [$0.x, $0.y, $0.width, $0.height]) })
+                blurs: section.redactions.map { RecordingDetails.Blur(id: $0.id, style: $0.style, rect: [$0.x, $0.y, $0.width, $0.height]) },
+                subtitles: section.subtitles)
         }
         var paths: [String: String] = [:]
         if let files = app.library.files(for: recording.id) {
@@ -517,10 +518,27 @@ final class ControlService {
     private func changeSettings(_ params: SetParams) throws -> EditResult {
         guard !params.values.isEmpty else { throw ControlError("Give settings as key=value, e.g. layout.aspect=portrait.") }
         let recording = try find(params.recording)
-        let edit = try recording.edit.setting(params.values)
-        let updated = update(recording, "Change Settings") { $0.edit = edit }
         let changes = params.values.keys.sorted().map { "\($0) = \(params.values[$0]!)" }.joined(separator: ", ")
-        return EditResult(message: "Set \(changes).", recording: info(updated))
+        guard params.from != nil || params.to != nil else {
+            let edit = try recording.edit.setting(params.values)
+            let updated = update(recording, "Change Settings") { $0.edit = edit }
+            return EditResult(message: "Set \(changes).", recording: info(updated))
+        }
+        guard params.values.keys.allSatisfy({ $0.hasPrefix("subtitles.") }) else {
+            throw ControlError("Only subtitles settings can change partway through. Set the others without a time.")
+        }
+        let from = params.from.map { snapped($0, in: recording) }
+        let to = params.to.map { snapped($0, in: recording) }
+        if (to ?? recording.duration) <= (from ?? 0) { throw ControlError("The end has to be after the start.") }
+        var edit = recording.edit
+        try edit.setSubtitleStyle(from: from, to: to, duration: recording.duration) { style in
+            var settings = recording.edit
+            settings.subtitles = style
+            style = try settings.setting(params.values).subtitles
+        }
+        let updated = update(recording, "Change Subtitle Style") { $0.edit = edit }
+        let span = ControlFormat.span((from ?? 0)..<(to ?? recording.duration))
+        return EditResult(message: "Set \(changes) from \(span).", recording: info(updated))
     }
 
     // MARK: Subtitles

@@ -453,6 +453,7 @@ final class EditorModel {
             recording.edit.sections[index].showsCamera = true
             recording.edit.sections[index].mutesAudio = false
             recording.edit.sections[index].camera = nil
+            recording.edit.sections[index].subtitles = nil
         }
     }
 
@@ -541,6 +542,38 @@ final class EditorModel {
     private func hintIfSectionOnly() {
         guard hasMultipleSections, !cameraPlacementIsUniform else { return }
         showHint("Camera changed in this section only.", action: .applyCameraToAllSections)
+    }
+
+    // MARK: Subtitles
+
+    /// The subtitle style the inspector shows: the section at the playhead's own, else the recording's.
+    var currentSubtitleStyle: SubtitleStyle {
+        get { currentSection.subtitles ?? recording.edit.subtitles }
+        set {
+            let index = currentSectionIndex
+            if recording.edit.sections[index].subtitles != nil {
+                recording.edit.sections[index].subtitles = newValue
+            } else {
+                recording.edit.subtitles = newValue
+            }
+        }
+    }
+
+    /// Whether some sections have a subtitle style of their own.
+    var hasSectionSubtitleStyles: Bool {
+        sections.contains { $0.subtitles != nil }
+    }
+
+    /// Uses the subtitle style of the section at the playhead in every section.
+    func applySubtitleStyleToAllSections() {
+        var style = currentSubtitleStyle
+        style.isEnabled = recording.edit.subtitles.isEnabled
+        performEdit("Apply Subtitle Style to All Sections") {
+            recording.edit.subtitles = style
+            for index in recording.edit.sections.indices {
+                recording.edit.sections[index].subtitles = nil
+            }
+        }
     }
 
     // MARK: Blur

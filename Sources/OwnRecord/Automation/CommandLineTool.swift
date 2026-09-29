@@ -60,12 +60,21 @@ enum CommandLineTool {
 
 enum ControlClient {
     /// Sends one request to the app and waits for its answer.
-    /// - Parameter activity: Shown with the progress (in a terminal), e.g. "Exporting".
+    /// - Parameters:
+    ///   - activity: Shown with the progress (in a terminal), e.g. "Exporting".
+    ///   - progress: Called with the app's progress reports, from 0 to 1.
+    ///   - cancellation: Lets another thread abandon the request, which cancels it in the app.
     static func send<Params: Encodable, Result: Decodable>(_ command: ControlCommand, _ params: Params,
                                                            activity: String? = nil,
+                                                           progress: ((Double) -> Void)? = nil,
+                                                           cancellation: ControlCancellation? = nil,
                                                            socketURL: URL = ControlChannel.socketURL) throws -> Result {
         let socket = socketURL == ControlChannel.socketURL ? try connectToApp() : try ControlChannel.connect(to: socketURL)
-        defer { close(socket) }
+        defer {
+            cancellation?.detach()
+            close(socket)
+        }
+        try cancellation?.attach(socket)
         var request = try ControlCoding.encoder.encode(ControlRequest(command: command.rawValue, params: params))
         request.append(0x0A)
         guard ControlChannel.write(request, to: socket) else { throw ControlError("Couldn't reach OwnRecord.") }
@@ -81,8 +90,12 @@ enum ControlClient {
             }
             if let error = message.error { throw ControlError(error) }
             if let result = message.result { return result }
-            if let progress = message.progress { meter?.update(progress) }
+            if let value = message.progress {
+                meter?.update(value)
+                progress?(value)
+            }
         }
+        if cancellation?.isCancelled == true { throw CancellationError() }
         throw ControlError("OwnRecord stopped answering. It may have quit.")
     }
 
@@ -90,7 +103,7 @@ enum ControlClient {
     private static func connectToApp() throws -> Int32 {
         if let socket = try? ControlChannel.connect(to: ControlChannel.socketURL) { return socket }
         guard isAllowed else {
-            throw ControlError("OwnRecord doesn't take commands yet. Turn on “Allow control from the command line” in OwnRecord › Settings.")
+            throw ControlError("OwnRecord doesn't take commands yet. Turn on “Allow control from the command line and AI apps” in OwnRecord › Settings.")
         }
         let isRunning = NSRunningApplication.runningApplications(withBundleIdentifier: ControlChannel.bundleIdentifier)
             .contains { $0.processIdentifier != getpid() }
@@ -138,6 +151,34 @@ enum ControlClient {
         let app = URL(fileURLWithPath: String(cString: path)).resolvingSymlinksInPath()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         return app.pathExtension == "app" ? app : nil
+    }
+}
+
+/// Abandons a request from another thread: closing the connection makes the app cancel its work.
+final class ControlCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var socket: Int32?
+    private var cancelled = false
+
+    var isCancelled: Bool { lock.withLock { cancelled } }
+
+    func cancel() {
+        lock.withLock {
+            cancelled = true
+            if let socket { shutdown(socket, SHUT_RDWR) }
+        }
+    }
+
+    fileprivate func attach(_ socket: Int32) throws {
+        try lock.withLock {
+            if cancelled { throw CancellationError() }
+            self.socket = socket
+        }
+    }
+
+    /// Before the socket is closed, so a later cancel can't hit a reused descriptor.
+    fileprivate func detach() {
+        lock.withLock { socket = nil }
     }
 }
 
@@ -384,6 +425,7 @@ private enum Report {
             if !section.showsScreen { notes.append("screen hidden") }
             if !section.showsCamera, recording.hasCamera { notes.append("camera hidden") }
             if section.muted { notes.append("muted") }
+            if section.subtitles != nil { notes.append("own subtitle style") }
             let played = section.deleted ? "cut"
                 : section.videoStart.map { "→ " + ControlFormat.span($0..<(section.videoEnd ?? $0)) } ?? "trimmed"
             let span = ControlFormat.span(section.start..<section.end)
@@ -401,7 +443,7 @@ private enum Report {
 }
 
 /// Moves files the app staged (see `ControlChannel.stagingRoot`) to where they were asked for.
-private enum Delivery {
+enum Delivery {
     /// The output path the user gave, made absolute.
     static func destination(_ path: String) -> URL {
         URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
@@ -413,9 +455,9 @@ private enum Delivery {
         }
     }
 
-    /// A name in the current directory that's not taken: "Demo.mp4", else "Demo 2.mp4", …
-    static func freeURL(named name: String, extension pathExtension: String) -> URL {
-        let folder = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    /// A name in `folder` (default: the current directory) that's not taken: "Demo.mp4", else "Demo 2.mp4", …
+    static func freeURL(named name: String, extension pathExtension: String,
+                        in folder: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)) -> URL {
         func url(_ suffix: String) -> URL {
             let file = folder.appendingPathComponent(name + suffix)
             return pathExtension.isEmpty ? file : file.appendingPathExtension(pathExtension)
@@ -436,6 +478,30 @@ private enum Delivery {
             try fileManager.removeItem(at: destination)
         }
         try fileManager.moveItem(at: URL(fileURLWithPath: staged), to: destination)
+    }
+
+    /// Moves an export into place: to `destination`, else named after the recording in `folder`.
+    /// Returns where the files went.
+    static func deliverExport(_ result: FilesResult, format: ExportFormat, to destination: URL?, folder: URL) throws -> [String] {
+        let name = result.name ?? "Recording"
+        var delivered: [String] = []
+        if format == .imovie {
+            let target = destination ?? freeURL(named: "\(name) for iMovie", extension: "", in: folder)
+            for file in result.files {
+                let fileTarget = target.appendingPathComponent(URL(fileURLWithPath: file).lastPathComponent)
+                try move(file, to: fileTarget)
+                delivered.append(fileTarget.path)
+            }
+        } else {
+            let target = destination ?? freeURL(named: name, extension: format.fileExtension, in: folder)
+            for file in result.files {
+                let fileTarget = URL(fileURLWithPath: file).pathExtension == "srt"
+                    ? target.deletingPathExtension().appendingPathExtension("srt") : target
+                try move(file, to: fileTarget)
+                delivered.append(fileTarget.path)
+            }
+        }
+        return delivered
     }
 
     /// Removes the staging folders of `files` (and anything not moved out of them).
@@ -490,6 +556,9 @@ struct ToolCommand {
         Output
         \(rows(["frame", "export"]))
 
+        AI apps
+        \(rows(["mcp"]))
+
         Recordings are named by ID (or its start, e.g. 4f3a2b1c), title, folder, or "latest".
         Times are in the original recording, as `show` and `transcript` print them, so they don't
         shift as you cut: seconds (12.5) or minutes:seconds (1:02.5).
@@ -503,8 +572,8 @@ struct ToolCommand {
           ownrecord frame latest --at 10 -o check.png
           ownrecord export latest -o demo.mp4
 
-        OwnRecord has to allow this first: Settings › Command Line. The app does the work (and is
-        started if it isn't running), so recording uses its Screen Recording permission, and
+        OwnRecord has to allow this first: Settings › Command Line & AI Apps. The app does the work
+        (and is started if it isn't running), so recording uses its Screen Recording permission, and
         recordings it starts show the usual controls.
         """
     }
@@ -827,8 +896,9 @@ struct ToolCommand {
         },
         ToolCommand(
             name: "set", summary: "Change layout, camera, subtitle and audio settings",
-            usage: "ownrecord set <recording> <setting>=<value> …",
-            details: settingsHelp
+            usage: "ownrecord set <recording> <setting>=<value> … [--from <time>] [--to <time>]",
+            details: settingsHelp,
+            values: ["from", "to"]
         ) { options, output in
             let recording = try options.recording()
             var values: [String: String] = [:]
@@ -839,7 +909,8 @@ struct ToolCommand {
                 values[String(pair[..<equals])] = String(pair[pair.index(after: equals)...])
             }
             guard !values.isEmpty else { throw UsageError("Give at least one setting=value.") }
-            let result: EditResult = try ControlClient.send(.set, SetParams(recording: recording, values: values))
+            let params = SetParams(recording: recording, values: values, from: try options.time("from"), to: try options.time("to"))
+            let result: EditResult = try ControlClient.send(.set, params)
             output.emit(result) { $0.message }
         },
         ToolCommand(
@@ -964,30 +1035,36 @@ struct ToolCommand {
             var result: FilesResult = try ControlClient.send(.export, params, activity: "Exporting")
             let staged = result.files
             defer { Delivery.cleanUp(staged) }
-            let name = result.name ?? "Recording"
-            var delivered: [String] = []
-            if format == .imovie {
-                let folder = destination ?? Delivery.freeURL(named: "\(name) for iMovie", extension: "")
-                for file in result.files {
-                    let target = folder.appendingPathComponent(URL(fileURLWithPath: file).lastPathComponent)
-                    try Delivery.move(file, to: target)
-                    delivered.append(target.path)
-                }
-            } else {
-                let target = destination ?? Delivery.freeURL(named: name, extension: format.fileExtension)
-                for file in result.files {
-                    let fileTarget = URL(fileURLWithPath: file).pathExtension == "srt"
-                        ? target.deletingPathExtension().appendingPathExtension("srt") : target
-                    try Delivery.move(file, to: fileTarget)
-                    delivered.append(fileTarget.path)
-                }
-            }
-            result.files = delivered
+            result.files = try Delivery.deliverExport(result, format: format, to: destination,
+                                                      folder: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
             output.emit(result) { $0.files.joined(separator: "\n") }
+        },
+
+        // AI apps
+        ToolCommand(
+            name: "mcp", summary: "Serve these commands to AI apps over MCP",
+            usage: "ownrecord mcp",
+            details: """
+            Runs an MCP (Model Context Protocol) server on standard input and output, so AI apps such as
+            Claude Desktop, ChatGPT or Cursor can record, edit and export with OwnRecord. Its tools do what
+            these commands do, and a frame comes back as an image the AI can look at.
+
+            Add it to the AI app's MCP servers rather than running it yourself. For example, in Claude
+            Desktop's claude_desktop_config.json (Settings › Developer › Edit Config):
+
+              { "mcpServers": { "ownrecord": { "command": "\(MCPServer.executablePath)", "args": ["mcp"] } } }
+
+            In Claude Code: claude mcp add ownrecord -- ownrecord mcp
+            OwnRecord › Settings › Command Line & AI Apps › Copy Configuration copies this for you.
+            """
+        ) { options, _ in
+            try options.expectPositionals(atMost: 0)
+            MCPServer.serve()
         },
     ]
 
-    private static var settingsHelp: String {
+    /// Every setting `set` changes, with its choices or default, e.g. ("layout.aspect", "original, landscape, …").
+    static var settingChoices: [(path: String, values: String)] {
         let defaults = EditSettings()
         let groups: [(String, Encodable)] = [("layout", defaults.layout), ("camera", defaults.camera),
                                              ("subtitles", defaults.subtitles), ("audio", defaults.audio)]
@@ -998,7 +1075,7 @@ struct ToolCommand {
             "camera.position": CameraPosition.allCases.map(\.rawValue).joined(separator: ", "),
             "subtitles.position": SubtitlePosition.allCases.map(\.rawValue).joined(separator: ", "),
         ]
-        var lines: [String] = []
+        var settings: [(path: String, values: String)] = []
         for (group, value) in groups {
             guard let data = try? JSONEncoder().encode(value),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
@@ -1011,17 +1088,28 @@ struct ToolCommand {
                     current = (try? JSONSerialization.data(withJSONObject: object[key]!, options: [.fragmentsAllowed, .sortedKeys]))
                         .map { String(decoding: $0, as: UTF8.self) } ?? ""
                 }
-                lines.append("  \(path.padding(toLength: max(28, path.count + 2), withPad: " ", startingAt: 0))\(choices[path] ?? "default \(current)")")
+                settings.append((path, choices[path] ?? "default \(current)"))
             }
         }
+        return settings
+    }
+
+    private static var settingsHelp: String {
+        let lines = settingChoices.map { "  \($0.path.padding(toLength: max(28, $0.path.count + 2), withPad: " ", startingAt: 0))\($0.values)" }
         return """
         Changes the edited video's look. Values are numbers, true/false, the names listed, or JSON
         (colors are {"red":1,"green":1,"blue":1,"alpha":1}). Sizes and margins are fractions of the
-        video's shorter side; volumes go from 0 to 1. Per-section camera placement is set in the editor.
+        video's shorter side, subtitles.outlineWidth is a fraction of the text size, and volumes go
+        from 0 to 1. Per-section camera placement is set in the editor.
 
         \(lines.joined(separator: "\n"))
 
-        Example: ownrecord set latest layout.aspect=portrait layout.background=aurora camera.shape=roundedSquare
+          --from <time>, --to <time>   Change subtitles settings only in this stretch (recording time),
+                                       which gets a subtitle style of its own
+
+        Examples:
+          ownrecord set latest layout.aspect=portrait layout.background=aurora camera.shape=roundedSquare
+          ownrecord set latest subtitles.outlineWidth=0.12 subtitles.shadow=false --from 30
         """
     }
 }

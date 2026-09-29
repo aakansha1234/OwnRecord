@@ -371,6 +371,29 @@ private struct SectionScopeNote: View {
     }
 }
 
+/// Explains which subtitle style the inspector changes when sections have their own.
+private struct SubtitleScopeNote: View {
+    @Bindable var model: EditorModel
+    let ownStyle: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "rectangle.split.3x1")
+                .foregroundStyle(.secondary)
+            Text(ownStyle
+                 ? "Section \(model.currentSectionIndex + 1) of \(model.sections.count) has its own subtitle style."
+                 : "This style applies to the sections without one of their own.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        Button("Apply to All Sections") { model.applySubtitleStyleToAllSections() }
+            .help("Use this subtitle style in every section")
+            .controlSize(.small)
+    }
+}
+
 // MARK: - Blur
 
 private struct BlurInspector: View {
@@ -572,23 +595,38 @@ private struct SubtitlesInspector: View {
     private var styleSection: some View {
         SwitchRow(title: "Show subtitles in video", isOn: $model.recording.edit.subtitles.isEnabled)
 
-        InspectorSection("Style") {
-            Picker("Position", selection: $model.recording.edit.subtitles.position) {
+        let ownStyle = model.currentSection.subtitles != nil
+        InspectorSection(ownStyle ? "Style in this section" : "Style") {
+            if model.hasSectionSubtitleStyles {
+                SubtitleScopeNote(model: model, ownStyle: ownStyle)
+            }
+            Picker("Position", selection: $model.currentSubtitleStyle.position) {
                 ForEach(SubtitlePosition.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
-            SliderRow(title: "Size", value: $model.recording.edit.subtitles.fontScale, range: 0.025...0.09,
+            SliderRow(title: "Size", value: $model.currentSubtitleStyle.fontScale, range: 0.025...0.09,
                       format: { "\(Int(($0 / 0.048 * 100).rounded()))%" })
-            Toggle("Bold", isOn: $model.recording.edit.subtitles.bold)
+            Toggle("Bold", isOn: $model.currentSubtitleStyle.bold)
                 .font(.system(size: 12))
             ColorPicker("Text color", selection: Binding(
-                get: { model.recording.edit.subtitles.textColor.color },
-                set: { model.recording.edit.subtitles.textColor = RGBAColor($0) }), supportsOpacity: false)
+                get: { model.currentSubtitleStyle.textColor.color },
+                set: { model.currentSubtitleStyle.textColor = RGBAColor($0) }), supportsOpacity: false)
                 .font(.system(size: 12))
             ColorPicker("Background", selection: Binding(
-                get: { model.recording.edit.subtitles.backgroundColor.color },
-                set: { model.recording.edit.subtitles.backgroundColor = RGBAColor($0) }), supportsOpacity: true)
+                get: { model.currentSubtitleStyle.backgroundColor.color },
+                set: { model.currentSubtitleStyle.backgroundColor = RGBAColor($0) }), supportsOpacity: true)
                 .font(.system(size: 12))
+            SliderRow(title: "Outline", value: $model.currentSubtitleStyle.outlineWidth, range: 0...0.16,
+                      format: { $0 < 0.005 ? "Off" : "\(Int(($0 * 100).rounded()))%" })
+            ColorPicker("Outline color", selection: Binding(
+                get: { model.currentSubtitleStyle.outlineColor.color },
+                set: { model.currentSubtitleStyle.outlineColor = RGBAColor($0) }), supportsOpacity: false)
+                .font(.system(size: 12))
+                .disabled(model.currentSubtitleStyle.outlineWidth < 0.005)
+            Toggle("Shadow", isOn: $model.currentSubtitleStyle.shadow)
+                .font(.system(size: 12))
+                .disabled(model.currentSubtitleStyle.backgroundColor.alpha > 0.01)
+                .help("A soft shadow behind the text when there's no background")
         }
         .disabled(!model.recording.edit.subtitles.isEnabled)
         .opacity(model.recording.edit.subtitles.isEnabled ? 1 : 0.5)

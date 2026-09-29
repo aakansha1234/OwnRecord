@@ -32,11 +32,12 @@ final class SubtitleRenderer: @unchecked Sendable {
                                                   value: pointer.baseAddress!)
             return CTParagraphStyleCreate(&setting, 1)
         }
-        let attributed = NSAttributedString(string: trimmed, attributes: [
+        let attributes: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): style.textColor.cgColor,
             NSAttributedString.Key(kCTParagraphStyleAttributeName as String): paragraph,
-        ])
+        ]
+        let attributed = NSAttributedString(string: trimmed, attributes: attributes)
 
         let horizontalPadding = fontSize * 0.55
         let verticalPadding = fontSize * 0.28
@@ -57,7 +58,7 @@ final class SubtitleRenderer: @unchecked Sendable {
             context.addPath(CGPath(roundedRect: bounds, cornerWidth: radius, cornerHeight: radius, transform: nil))
             context.setFillColor(style.backgroundColor.cgColor)
             context.fillPath()
-        } else {
+        } else if style.shadow {
             // No box: add a soft shadow so text stays legible on any background.
             context.setShadow(offset: CGSize(width: 0, height: -fontSize * 0.04), blur: fontSize * 0.25,
                               color: CGColor(gray: 0, alpha: 0.85))
@@ -65,6 +66,18 @@ final class SubtitleRenderer: @unchecked Sendable {
 
         let path = CGPath(rect: CGRect(x: horizontalPadding, y: verticalPadding, width: textSize.width, height: textSize.height),
                           transform: nil)
+        if style.outlineWidth > 0 {
+            // Stroke the letters first, twice as wide as the outline since half the stroke lies
+            // inside them, then fill on top. (A stroke width is a percentage of the font size.)
+            var outlined = attributes
+            outlined[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = style.outlineWidth * 200
+            outlined[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = style.outlineColor.cgColor
+            let outline = CTFramesetterCreateWithAttributedString(NSAttributedString(string: trimmed, attributes: outlined))
+            context.setLineJoin(.round)
+            CTFrameDraw(CTFramesetterCreateFrame(outline, CFRange(location: 0, length: 0), path, nil), context)
+            // The outline already casts the shadow.
+            context.setShadow(offset: .zero, blur: 0, color: nil)
+        }
         let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: 0), path, nil)
         CTFrameDraw(frame, context)
         return context.makeImage()

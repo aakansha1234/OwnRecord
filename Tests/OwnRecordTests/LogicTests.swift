@@ -171,6 +171,48 @@ private func seconds(_ value: Double) -> CMTime { CMTime(seconds: value, preferr
         #expect(image.width > 200 && image.width < 1600)
         #expect(image.height > 48 && image.height < 140)
     }
+
+    @Test func outlinesLettersWithoutABox() throws {
+        var style = SubtitleStyle()
+        style.backgroundColor = .black.withAlpha(0)
+        style.shadow = false
+        // Opaque pixels that are dark: only the outline can make them.
+        func darkPixels(_ style: SubtitleStyle) throws -> Int {
+            let image = try #require(SubtitleRenderer.render(text: "Hello", style: style, fontSize: 48, maxWidth: 1600))
+            let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                                                 bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            let pixels = try #require(context.data).bindMemory(to: UInt8.self, capacity: image.width * image.height * 4)
+            return (0..<(image.width * image.height)).filter { pixels[$0 * 4 + 3] > 200 && pixels[$0 * 4] < 60 }.count
+        }
+        #expect(try darkPixels(style) == 0)
+        style.outlineWidth = 0.12
+        #expect(try darkPixels(style) > 200)
+    }
+
+    @Test func decodesSubtitleStylesFromBeforeOutlines() throws {
+        let json = #"{"isEnabled":true,"fontScale":0.05,"position":"top","textColor":{"red":1,"green":1,"blue":1,"alpha":1},"backgroundColor":{"red":0,"green":0,"blue":0,"alpha":0.5},"bold":false}"#
+        let style = try JSONDecoder().decode(SubtitleStyle.self, from: Data(json.utf8))
+        #expect(style.fontScale == 0.05 && style.position == .top && !style.bold)
+        #expect(style.outlineWidth == 0 && style.shadow)
+    }
+
+    @Test func sectionsCanHaveTheirOwnSubtitleStyle() throws {
+        var edit = EditSettings()
+        edit.setSubtitleStyle(from: 4, to: nil, duration: 10) { $0.outlineWidth = 0.1 }
+        #expect(edit.sections.map(\.start) == [0, 4])
+        #expect(edit.subtitleStyle(at: 2).outlineWidth == 0)
+        #expect(edit.subtitleStyle(at: 6).outlineWidth == 0.1)
+        // The recording's switch still turns them off everywhere.
+        edit.subtitles.isEnabled = false
+        #expect(!edit.subtitleStyle(at: 6).isEnabled)
+
+        // A section keeps its style through a round trip, and older sections decode without one.
+        let decoded = try JSONDecoder().decode(EditSettings.self, from: JSONEncoder().encode(edit))
+        #expect(decoded.sections[1].subtitles?.outlineWidth == 0.1)
+        #expect(decoded.sections[0].subtitles == nil)
+    }
 }
 
 @Suite struct TranscriptionChunkingTests {

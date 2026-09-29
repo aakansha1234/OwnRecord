@@ -26,6 +26,8 @@ struct TimelineSection: Codable, Hashable, Identifiable {
     var camera: CameraPlacement?
     /// Blurred or pixelated areas of the screen.
     var redactions: [Redaction] = []
+    /// nil uses the recording-wide `SubtitleStyle`.
+    var subtitles: SubtitleStyle?
 
     init(start: Double) {
         self.start = start
@@ -41,11 +43,12 @@ struct TimelineSection: Codable, Hashable, Identifiable {
         mutesAudio = try container.decodeIfPresent(Bool.self, forKey: .mutesAudio) ?? false
         camera = try container.decodeIfPresent(CameraPlacement.self, forKey: .camera)
         redactions = try container.decodeIfPresent([Redaction].self, forKey: .redactions) ?? []
+        subtitles = try container.decodeIfPresent(SubtitleStyle.self, forKey: .subtitles)
     }
 
     /// Whether the section changes anything besides being a separate piece.
     var isCustomized: Bool {
-        isDeleted || !showsScreen || !showsCamera || mutesAudio || camera != nil
+        isDeleted || !showsScreen || !showsCamera || mutesAudio || camera != nil || subtitles != nil
     }
 }
 
@@ -95,6 +98,28 @@ extension EditSettings {
         var placement = section.camera ?? camera.placement
         placement.shape = placement.shape ?? camera.shape
         return placement
+    }
+
+    /// The subtitle style at `time` (recording time): its section's own, or the recording's. The
+    /// recording's switch turns subtitles off everywhere.
+    func subtitleStyle(at time: Double) -> SubtitleStyle {
+        var style = section(at: time).subtitles ?? subtitles
+        style.isEnabled = style.isEnabled && subtitles.isEnabled
+        return style
+    }
+
+    /// Gives the sections between `from` and `to` (recording time) their own subtitle style, made
+    /// from the style they have now, splitting there first.
+    mutating func setSubtitleStyle(from: Double?, to: Double?, duration: Double,
+                                   _ change: (inout SubtitleStyle) throws -> Void) rethrows {
+        let range = (from ?? 0)..<(to ?? duration)
+        split(at: range.lowerBound, duration: duration)
+        split(at: range.upperBound, duration: duration)
+        for index in sections.indices where self.range(ofSectionAt: index, duration: duration).overlaps(range) {
+            var style = sections[index].subtitles ?? subtitles
+            try change(&style)
+            sections[index].subtitles = style
+        }
     }
 
     /// The parts of the recording that make it into the video, in order and merged.

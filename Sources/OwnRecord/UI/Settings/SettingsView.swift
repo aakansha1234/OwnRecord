@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var locales: [TranscriptionEngine.LocaleOption] = []
     @State private var commandInstalled = false
     @State private var installError: String?
+    @State private var copiedMCPConfiguration = false
 
     var body: some View {
         Form {
@@ -68,7 +69,7 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle("Allow control from the command line", isOn: $preferences.allowsCommandLineControl)
+                Toggle("Allow control from the command line and AI apps", isOn: $preferences.allowsCommandLineControl)
                 LabeledContent("Command") {
                     HStack {
                         Text("ownrecord")
@@ -78,10 +79,13 @@ struct SettingsView: View {
                             .disabled(commandInstalled)
                     }
                 }
+                LabeledContent("MCP server") {
+                    Button(copiedMCPConfiguration ? "Copied" : "Copy Configuration") { copyMCPConfiguration() }
+                }
             } header: {
-                Text("Command Line")
+                Text("Command Line & AI Apps")
             } footer: {
-                Text("The ownrecord command lets scripts and AI agents such as Claude Code record, edit and export with OwnRecord. Run “ownrecord help” in Terminal to see what it can do. Recordings it starts show the usual controls, and only apps running as you can use it. Install puts the command in /usr/local/bin.")
+                Text("The ownrecord command lets scripts and AI agents such as Claude Code record, edit and export with OwnRecord. Run “ownrecord help” in Terminal to see what it can do; Install puts it in /usr/local/bin. AI apps such as Claude Desktop use it as an MCP server: Copy Configuration copies the setting to add to the app's MCP servers (in Claude Desktop, Settings › Developer › Edit Config). Recordings it starts show the usual controls, and only apps running as you can use it.")
             }
 
             Section("Storage") {
@@ -115,6 +119,15 @@ struct SettingsView: View {
         } message: {
             Text(installError ?? "")
         }
+    }
+
+    private func copyMCPConfiguration() {
+        let server: [String: Any] = ["command": MCPServer.executablePath, "args": ["mcp"]]
+        guard let data = try? JSONSerialization.data(withJSONObject: ["mcpServers": ["ownrecord": server]],
+                                                     options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(String(decoding: data, as: UTF8.self), forType: .string)
+        copiedMCPConfiguration = true
     }
 
     private func installCommand() {
