@@ -7,6 +7,7 @@ enum TranscriptionError: LocalizedError {
     case unsupportedLanguage
     case recognizerUnavailable
     case noAudio
+    case noSpeech
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,7 @@ enum TranscriptionError: LocalizedError {
         case .unsupportedLanguage: "This language isn't supported for transcription."
         case .recognizerUnavailable: "Speech recognition isn't available right now. Check that Siri & Dictation assets are downloaded, then try again."
         case .noAudio: "This recording has no audio to transcribe."
+        case .noSpeech: "No speech was detected in this recording."
         }
     }
 }
@@ -65,6 +67,21 @@ enum TranscriptionEngine {
 
     static func supportsOnDevice(localeIdentifier: String) -> Bool {
         SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))?.supportsOnDeviceRecognition ?? false
+    }
+
+    /// Subtitles for a recording, from every track that's audible in its edit (muted tracks are skipped).
+    static func transcript(for recording: Recording, files: RecordingFiles, localeIdentifier: String,
+                           progress: @escaping @Sendable (Double) -> Void) async throws -> Transcript {
+        let audio = recording.edit.audio
+        let audible = recording.audioTracks.indices.filter {
+            (recording.audioTracks[$0] == .microphone ? audio.microphoneVolume : audio.systemVolume) > 0
+        }
+        let words = try await transcribe(assetURL: files.screen,
+                                         audioTrackIndices: audible.isEmpty ? Array(recording.audioTracks.indices) : audible,
+                                         locale: Locale(identifier: localeIdentifier), progress: progress)
+        let cues = CueBuilder.cues(from: words, joiner: CueBuilder.joiner(for: localeIdentifier))
+        guard !cues.isEmpty else { throw TranscriptionError.noSpeech }
+        return Transcript(localeIdentifier: localeIdentifier, createdAt: Date(), words: words, cues: cues)
     }
 
     /// - Parameter audioTrackIndices: Audio tracks (in track order) to mix and transcribe.

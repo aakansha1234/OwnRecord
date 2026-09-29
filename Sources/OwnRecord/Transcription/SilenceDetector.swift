@@ -126,6 +126,14 @@ enum SilenceDetector {
     }
 }
 
+extension Recording {
+    /// The track pauses are found in: the microphone (your voice) unless it's muted in the mix.
+    var silenceTrack: AudioTrackKind? {
+        if hasMicrophone, edit.audio.microphoneVolume > 0 || !hasSystemAudio { return .microphone }
+        return hasSystemAudio ? .system : nil
+    }
+}
+
 extension EditSettings {
     /// The parts of `pauses` that are in the video (not trimmed or deleted) and long enough to cut.
     func pausesInVideo(_ pauses: [Range<Double>], duration: Double) -> [Range<Double>] {

@@ -480,6 +480,21 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         #expect(!EditorCommand.blurArea.isEnabled(for: model))
     }
 
+    @Test func takesCommandLineEditsAsUndoSteps() async throws {
+        let (model, root) = try await makeModel()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var updated = model.recording
+        updated.edit.cutPauses([0.5..<1.2], deleting: true, duration: updated.duration)
+        step(model) { model.applyEdit(updated, actionName: "Cut") }
+        #expect(model.undoManager.undoActionName == "Cut")
+        #expect(abs(model.recording.editedDuration - (updated.duration - 0.7)) < 0.01)
+
+        model.undoManager.undo()
+        #expect(model.sections.count == 1)
+        #expect(!model.sections[0].isDeleted)
+    }
+
     @Test func removesSilencesInOneUndoStep() async throws {
         let (model, root) = try await makeModel(microphone: true)
         defer { try? FileManager.default.removeItem(at: root) }

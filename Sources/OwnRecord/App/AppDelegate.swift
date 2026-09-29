@@ -20,8 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Created up front so it can be left out of recordings from the start (see Teleprompter.windowID).
         _ = model.teleprompter.windowID
+        model.startControlServer()
 
-        model.windows.showHome()
+        // The command line tool starts the app in the background, without the library.
+        if !ProcessInfo.processInfo.arguments.contains(CommandLineTool.backgroundLaunchArgument) {
+            model.windows.showHome()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -37,6 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         AppModel.shared.permissions.refresh()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        AppModel.shared.control.stop()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

@@ -50,7 +50,7 @@ enum CueBuilder {
     }
 }
 
-enum SubtitleFileFormat: String, CaseIterable, Identifiable {
+enum SubtitleFileFormat: String, CaseIterable, Identifiable, Codable {
     case srt, vtt, txt
 
     var id: String { rawValue }
@@ -65,6 +65,12 @@ enum SubtitleFileFormat: String, CaseIterable, Identifiable {
 }
 
 enum SubtitleExporter {
+    /// A subtitle file for the edited video (cut parts left out), or nil without a transcript.
+    static func file(for recording: Recording, format: SubtitleFileFormat) -> String? {
+        guard let transcript = recording.transcript else { return nil }
+        return string(for: cues(transcript.cues, timeline: recording.editedTimeline), format: format)
+    }
+
     /// Moves cues onto the edited video's timeline, dropping those that were cut away.
     static func cues(_ cues: [SubtitleCue], timeline: TimelineMap) -> [SubtitleCue] {
         cues.compactMap { cue in

@@ -58,11 +58,7 @@ struct HomeView: View {
     private var filtered: [Recording] {
         let query = search.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return library.recordings }
-        return library.recordings.filter {
-            $0.title.localizedCaseInsensitiveContains(query)
-                || $0.sourceName.localizedCaseInsensitiveContains(query)
-                || ($0.transcript?.fullText.localizedCaseInsensitiveContains(query) ?? false)
-        }
+        return library.recordings.filter { $0.matches(search: query) }
     }
 
     // MARK: Header

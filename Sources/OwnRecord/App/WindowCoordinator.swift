@@ -83,6 +83,11 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     func closeEditor(for id: UUID) {
         editors[id]?.close()
     }
+
+    /// The editor of a recording, if it's open.
+    func editorModel(for id: UUID) -> EditorModel? {
+        editors[id]?.model
+    }
 }
 
 /// The compact floating panel for choosing what and how to record.
@@ -133,7 +138,7 @@ final class RecorderPanelController {
 /// Hosts one recording's editor, and handles the Timeline and Playback menu commands for it.
 @MainActor
 final class EditorWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation {
-    private let model: EditorModel
+    let model: EditorModel
     private let onClose: () -> Void
 
     init(model: EditorModel, onClose: @escaping () -> Void) {

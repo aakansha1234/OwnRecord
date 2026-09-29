@@ -12,6 +12,8 @@ final class AppModel {
     let windows = WindowCoordinator()
     let teleprompter: Teleprompter
     private(set) var recording: RecordingController!
+    private(set) var control: ControlServer!
+    private var controlService: ControlService!
 
     private init() {
         recorder = RecorderModel(preferences: preferences)
@@ -19,6 +21,31 @@ final class AppModel {
         recording = RecordingController(app: self)
         recorder.onDevicesChanged = { [weak self] in self?.recording.updateDevices() }
         teleprompter.follow(recording)
+        let service = ControlService(app: self)
+        controlService = service
+        control = ControlServer { command, request, progress in
+            try await service.handle(command, request, progress: progress)
+        }
+    }
+
+    /// Listens for the `ownrecord` command line tool while the user allows it in Settings.
+    func startControlServer() {
+        controlService.removeOldStagedFiles()
+        observeContinuously({ [weak self] in _ = self?.preferences.allowsCommandLineControl },
+                            onChange: { [weak self] in self?.updateControlServer() })
+        updateControlServer()
+    }
+
+    private func updateControlServer() {
+        guard preferences.allowsCommandLineControl else {
+            control.stop()
+            return
+        }
+        do {
+            try control.start()
+        } catch {
+            NSLog("OwnRecord: couldn't listen for the command line tool: \(error)")
+        }
     }
 
     /// Opens the recorder panel (source, camera and mic selection).

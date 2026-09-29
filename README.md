@@ -70,6 +70,28 @@ and the Speech framework. Requires macOS 15 or later.
   (`screen.mov`, `camera.mov`, `recording.json`, `thumbnail.jpg`). Edits never touch the
   source media.
 
+**Command line & AI agents**
+- The `ownrecord` command records, edits and exports from a terminal, scripts and AI agents such
+  as Claude Code: `record` (screen, window or area, with `--duration` and `--wait`), `stop`,
+  `list`, `show`, `transcribe`, `transcript`, `cut`, `trim`, `silences`, `blur`, `set` (layout,
+  camera, subtitle and audio settings), `frame` (a still to check an edit) and `export` (MP4,
+  MOV, GIF, iMovie clips). `--json` on any command gives machine-readable output; `ownrecord help`
+  explains everything.
+- Turn it on in **Settings › Command Line** (off by default), where **Install…** puts the
+  command in `/usr/local/bin`. The app does the work (and is started in the background if
+  needed), so recordings use its permissions and show the usual controls, and edits made while
+  a recording is open in the editor can be undone there. Only apps running as you can use it.
+
+```sh
+ownrecord record --window Simulator --countdown 0 --duration 20 --wait
+ownrecord transcript latest              # timed lines, to decide what to cut
+ownrecord cut latest 4.2 6.8             # times are in the original recording
+ownrecord silences latest --delete
+ownrecord blur latest --rect 0.62,0.08,0.3,0.05 --from 12 --to 20
+ownrecord frame latest --at 10 -o check.png
+ownrecord export latest -o demo.mp4
+```
+
 ## Build & run
 
 Only the Xcode Command Line Tools are needed (Swift 6).
@@ -111,6 +133,8 @@ composite them with the real compositor, and export MP4 and GIF. Scratch files g
 ```
 Sources/OwnRecord
 ├── App/            entry point, AppModel (composition root), menus, status item, windows
+├── Automation/     the `ownrecord` tool (the app's executable under that name), the socket
+│                   server it talks to, and the commands it runs in the app
 ├── Capture/        RecordingController (state machine), ScreenCaptureKit session, camera &
 │                   mic capture, MovieWriter (AVAssetWriter), RecordingClock (pause-aware timeline)
 ├── Rendering/      LayoutEngine (pure geometry), FrameRenderer (Core Image), custom

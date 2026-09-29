@@ -48,6 +48,13 @@ struct Recording: Codable, Identifiable, Hashable {
     var hasSystemAudio: Bool { audioTracks.contains(.system) }
     var hasAudio: Bool { !audioTracks.isEmpty }
     var pixelSize: CGSize { CGSize(width: pixelWidth, height: pixelHeight) }
+
+    /// Whether the title, source or transcript contains `query`.
+    func matches(search query: String) -> Bool {
+        title.localizedCaseInsensitiveContains(query)
+            || sourceName.localizedCaseInsensitiveContains(query)
+            || (transcript?.fullText.localizedCaseInsensitiveContains(query) ?? false)
+    }
 }
 
 /// File layout of a recording folder.

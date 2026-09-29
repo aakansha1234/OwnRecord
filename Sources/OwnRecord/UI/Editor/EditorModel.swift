@@ -691,12 +691,8 @@ final class EditorModel {
         var decibelCount: Int
     }
 
-    /// The track pauses are found in: the microphone (your voice) unless it's muted in the mix.
-    var silenceTrack: AudioTrackKind? {
-        let audio = recording.edit.audio
-        if recording.hasMicrophone, audio.microphoneVolume > 0 || !recording.hasSystemAudio { return .microphone }
-        return recording.hasSystemAudio ? .system : nil
-    }
+    /// The track pauses are found in.
+    var silenceTrack: AudioTrackKind? { recording.silenceTrack }
 
     var silenceThreshold: Double {
         get {
@@ -819,6 +815,11 @@ final class EditorModel {
     }
 
     // MARK: Undo
+
+    /// Takes a change made elsewhere (by the command line tool) as one undo step.
+    func applyEdit(_ updated: Recording, actionName: String) {
+        performEdit(actionName) { recording = updated }
+    }
 
     /// Runs an edit as one named undo step. Coalescing edits (drags, sliders) merge with the
     /// previous step of the same name if it happened within a second.
@@ -960,14 +961,9 @@ final class EditorModel {
 
     func generateTranscript(requestPermission: Bool = true) {
         guard recording.hasAudio, transcriptionTask == nil else { return }
-        // Transcribe every track that's audible in the edit (muted tracks are skipped).
-        let audio = recording.edit.audio
-        let audible = recording.audioTracks.indices.filter {
-            (recording.audioTracks[$0] == .microphone ? audio.microphoneVolume : audio.systemVolume) > 0
-        }
-        let trackIndices = audible.isEmpty ? Array(recording.audioTracks.indices) : audible
+        let recording = self.recording
+        let files = self.files
         let localeIdentifier = transcriptionLocale
-        let url = files.screen
         transcription = .running(0)
         transcriptionTask = Task { [weak self] in
             defer { self?.transcriptionTask = nil }
@@ -978,24 +974,19 @@ final class EditorModel {
                 }
             }
             do {
-                let words = try await TranscriptionEngine.transcribe(
-                    assetURL: url, audioTrackIndices: trackIndices, locale: Locale(identifier: localeIdentifier)
+                let transcript = try await TranscriptionEngine.transcript(
+                    for: recording, files: files, localeIdentifier: localeIdentifier
                 ) { progress in
                     Task { @MainActor in
                         if case .running = self?.transcription { self?.transcription = .running(progress) }
                     }
                 }
                 guard let self else { return }
-                let cues = CueBuilder.cues(from: words, joiner: CueBuilder.joiner(for: localeIdentifier))
-                if cues.isEmpty {
-                    self.transcription = .failed("No speech was detected in this recording.")
-                } else {
-                    var updated = self.recording
-                    updated.transcript = Transcript(localeIdentifier: localeIdentifier, createdAt: Date(), words: words, cues: cues)
-                    updated.edit.subtitles.isEnabled = true
-                    self.performEdit("Generate Subtitles") { self.recording = updated }
-                    self.transcription = .idle
-                }
+                var updated = self.recording
+                updated.transcript = transcript
+                updated.edit.subtitles.isEnabled = true
+                self.performEdit("Generate Subtitles") { self.recording = updated }
+                self.transcription = .idle
             } catch is CancellationError {
                 self?.transcription = .idle
             } catch {
@@ -1009,20 +1000,18 @@ final class EditorModel {
     }
 
     func exportSubtitles(format: SubtitleFileFormat) {
-        guard let transcript = recording.transcript else { return }
+        guard let file = SubtitleExporter.file(for: recording, format: format) else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "\(Self.fileName(for: recording.title)).\(format.rawValue)"
         panel.canCreateDirectories = true
-        let cues = SubtitleExporter.cues(transcript.cues, timeline: recording.editedTimeline)
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? SubtitleExporter.string(for: cues, format: format).write(to: url, atomically: true, encoding: .utf8)
+        try? file.write(to: url, atomically: true, encoding: .utf8)
     }
 
     func copyTranscript() {
-        guard let transcript = recording.transcript else { return }
-        let cues = SubtitleExporter.cues(transcript.cues, timeline: recording.editedTimeline)
+        guard let text = SubtitleExporter.file(for: recording, format: .txt) else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(SubtitleExporter.string(for: cues, format: .txt), forType: .string)
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     // MARK: Export
@@ -1069,10 +1058,8 @@ final class EditorModel {
             }
             do {
                 try await VideoExporter.export(recording: recording, files: files, options: options, to: url, progress: progress)
-                if options.includeSubtitleFile, options.format != .gif, let transcript = recording.transcript {
-                    let cues = SubtitleExporter.cues(transcript.cues, timeline: recording.editedTimeline)
-                    try? SubtitleExporter.string(for: cues, format: .srt)
-                        .write(to: url.deletingPathExtension().appendingPathExtension("srt"), atomically: true, encoding: .utf8)
+                if options.includeSubtitleFile, options.format != .gif, let file = SubtitleExporter.file(for: recording, format: .srt) {
+                    try? file.write(to: url.deletingPathExtension().appendingPathExtension("srt"), atomically: true, encoding: .utf8)
                 }
                 self?.export = .finished(url, clips: [])
             } catch is CancellationError {

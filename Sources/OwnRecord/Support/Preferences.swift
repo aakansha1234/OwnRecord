@@ -44,6 +44,10 @@ final class Preferences {
     var showCursor: Bool { didSet { defaults.set(showCursor, forKey: "showCursor") } }
     var highlightClicks: Bool { didSet { defaults.set(highlightClicks, forKey: "highlightClicks") } }
     var hideDesktopIcons: Bool { didSet { defaults.set(hideDesktopIcons, forKey: "hideDesktopIcons") } }
+    /// Let the `ownrecord` command line tool (scripts, AI agents) control the app.
+    var allowsCommandLineControl: Bool {
+        didSet { defaults.set(allowsCommandLineControl, forKey: ControlChannel.preferenceKey) }
+    }
     var videoQuality: VideoQuality { didSet { defaults.set(videoQuality.rawValue, forKey: "videoQuality") } }
 
     // After recording
@@ -94,6 +98,7 @@ final class Preferences {
         showCursor = d.bool(forKey: "showCursor")
         highlightClicks = d.bool(forKey: "highlightClicks")
         hideDesktopIcons = d.bool(forKey: "hideDesktopIcons")
+        allowsCommandLineControl = d.bool(forKey: ControlChannel.preferenceKey)
         videoQuality = VideoQuality(rawValue: d.string(forKey: "videoQuality") ?? "") ?? .standard
         openEditorAfterRecording = d.bool(forKey: "openEditorAfterRecording")
         autoTranscribe = d.bool(forKey: "autoTranscribe")

@@ -22,17 +22,27 @@ final class RecordingController {
     var isActive: Bool { phase != .idle }
     var isCapturing: Bool { phase == .recording || phase == .paused }
 
+    /// Identifies the take in progress (nil once it's being saved).
+    var takeID: UUID? { session?.id }
+
+    /// Seconds recorded in the take so far, not counting pauses.
+    var recordedTime: TimeInterval? {
+        guard isCapturing, let clock = session?.clock else { return nil }
+        return clock.elapsed(at: RecordingClock.now())
+    }
+
     @ObservationIgnored let camera = CameraCapture()
     @ObservationIgnored let microphone: MicrophoneCapture
     @ObservationIgnored private let sampleQueue = DispatchQueue(label: "com.ownrecord.samples", qos: .userInitiated)
     @ObservationIgnored private unowned let app: AppModel
     @ObservationIgnored private var session: ActiveSession?
-    @ObservationIgnored private var startTask: Task<Void, Never>?
+    @ObservationIgnored private var startTask: Task<Error?, Never>?
     @ObservationIgnored private var skipCountdown = false
     @ObservationIgnored private var interruption: Error?
     @ObservationIgnored private var previewActive = false
     @ObservationIgnored private var ticker: Timer?
     @ObservationIgnored private var levelTimer: Timer?
+    @ObservationIgnored private var takeWaiters: [CheckedContinuation<Recording?, Never>] = []
 
     @ObservationIgnored private(set) lazy var bubble = CameraBubbleController(camera: camera, preferences: app.preferences)
     @ObservationIgnored private lazy var controlBar = ControlBarController(controller: self)
@@ -106,7 +116,27 @@ final class RecordingController {
         guard phase == .idle else { return }
         phase = .preparing
         skipCountdown = false
-        startTask = Task { await performStart() }
+        startTask = Task { await performStart(interactive: true) }
+    }
+
+    /// Starts recording for the command line tool and returns once it's recording (after the
+    /// countdown). Unlike `start()`, a failure is thrown rather than shown, and the recorder
+    /// doesn't reopen.
+    /// - Parameter countdown: Seconds; nil uses the countdown from Settings.
+    func startRecording(countdown: Int? = nil) async throws {
+        guard phase == .idle else { throw ControlError("OwnRecord is already recording.") }
+        phase = .preparing
+        skipCountdown = false
+        let task = Task { await performStart(interactive: false, countdown: countdown) }
+        startTask = task
+        if let error = await task.value { throw error }
+    }
+
+    /// Waits for the take in progress to end. Returns the saved recording, or nil if it was
+    /// discarded or couldn't be saved.
+    func waitForTake() async -> Recording? {
+        guard isActive else { return nil }
+        return await withCheckedContinuation { takeWaiters.append($0) }
     }
 
     func stop() {
@@ -137,7 +167,8 @@ final class RecordingController {
     }
 
     /// Throws away the current recording (or cancels the countdown).
-    func discard() {
+    /// - Parameter reopeningRecorder: Show the recorder again, to record another take.
+    func discard(reopeningRecorder: Bool = true) {
         switch phase {
         case .preparing, .countdown:
             startTask?.cancel()
@@ -146,7 +177,12 @@ final class RecordingController {
             Task {
                 await dispose(session)
                 phase = .idle
-                app.showRecorder()
+                takeEnded(nil)
+                if reopeningRecorder {
+                    app.showRecorder()
+                } else {
+                    updateDevices()
+                }
             }
         default:
             break
@@ -158,6 +194,7 @@ final class RecordingController {
         Task {
             await dispose(session)
             phase = .idle
+            takeEnded(nil)
             start()
         }
     }
@@ -169,7 +206,7 @@ final class RecordingController {
             await finish(openEditor: false)
         case .preparing, .countdown:
             startTask?.cancel()
-            await startTask?.value
+            _ = await startTask?.value
         default:
             break
         }
@@ -185,8 +222,11 @@ final class RecordingController {
 
     // MARK: Start
 
-    private func performStart() async {
+    /// Returns why the recording didn't start, if it didn't.
+    /// - Parameter interactive: Show errors and reopen the recorder when the recording can't start.
+    private func performStart(interactive: Bool, countdown: Int? = nil) async -> Error? {
         let preferences = app.preferences
+        let countdown = countdown ?? preferences.countdown
         let recorder = app.recorder
         do {
             guard await app.permissions.request(.screen) else { throw CaptureError.permissionDenied }
@@ -244,7 +284,7 @@ final class RecordingController {
             if target.mode == .area { areaFrame.show(around: target.frame) }
             controlBar.show(on: target.screen ?? NSScreen.main)
 
-            for remaining in stride(from: preferences.countdown, through: 1, by: -1) where !skipCountdown {
+            for remaining in stride(from: countdown, through: 1, by: -1) where !skipCountdown {
                 phase = .countdown(remaining)
                 countdownOverlay.show(remaining, on: target.screen ?? NSScreen.main)
                 for _ in 0..<10 where !skipCountdown {
@@ -262,19 +302,22 @@ final class RecordingController {
             }
             phase = .recording
             startTicker()
-        } catch is CancellationError {
-            await abandonStart()
-            if let interruption {
-                self.interruption = nil
-                presentError(interruption, title: "Recording couldn't start")
-            }
-            app.showRecorder()
+            startTask = nil
+            return nil
         } catch {
             await abandonStart()
-            presentError(error, title: "Recording couldn't start")
-            app.showRecorder()
+            startTask = nil
+            var failure = error
+            if error is CancellationError, let interruption {
+                self.interruption = nil
+                failure = interruption
+            }
+            if interactive {
+                if !(failure is CancellationError) { presentError(failure, title: "Recording couldn't start") }
+                app.showRecorder()
+            }
+            return failure
         }
-        startTask = nil
     }
 
     private func abandonStart() async {
@@ -286,13 +329,16 @@ final class RecordingController {
             hideRecordingUI()
         }
         phase = .idle
+        takeEnded(nil)
     }
 
     // MARK: Stop
 
-    func finish(openEditor: Bool) async {
-        guard let session = takeSession() else { return }
-        await complete(session, openEditor: openEditor)
+    /// Stops and saves the take. Returns the saved recording.
+    @discardableResult
+    func finish(openEditor: Bool) async -> Recording? {
+        guard let session = takeSession() else { return nil }
+        return await complete(session, openEditor: openEditor)
     }
 
     /// Detaches the active session and moves to `.finishing` before any suspension point, so
@@ -305,7 +351,8 @@ final class RecordingController {
         return session
     }
 
-    private func complete(_ session: ActiveSession, openEditor: Bool) async {
+    @discardableResult
+    private func complete(_ session: ActiveSession, openEditor: Bool) async -> Recording? {
         let endHost = RecordingClock.now()
         let endTime = session.clock.endTime(at: endHost) ?? endHost
         let startTime = session.clock.startTime ?? endTime
@@ -335,7 +382,8 @@ final class RecordingController {
         guard saved else {
             try? FileManager.default.removeItem(at: session.folder)
             app.windows.restoreHomeAfterRecording()
-            return
+            takeEnded(nil)
+            return nil
         }
 
         let files = RecordingFiles(folder: session.folder)
@@ -359,6 +407,16 @@ final class RecordingController {
                                    autoTranscribe: app.preferences.autoTranscribe && recording.hasAudio)
         } else {
             app.windows.restoreHomeAfterRecording()
+        }
+        takeEnded(recording)
+        return recording
+    }
+
+    private func takeEnded(_ recording: Recording?) {
+        let waiters = takeWaiters
+        takeWaiters = []
+        for waiter in waiters {
+            waiter.resume(returning: recording)
         }
     }
 

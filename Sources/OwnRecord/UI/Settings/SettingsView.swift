@@ -5,6 +5,8 @@ struct SettingsView: View {
     let permissions: Permissions
     let library: RecordingLibrary
     @State private var locales: [TranscriptionEngine.LocaleOption] = []
+    @State private var commandInstalled = false
+    @State private var installError: String?
 
     var body: some View {
         Form {
@@ -65,6 +67,23 @@ struct SettingsView: View {
                 LabeledContent("Step one frame") { ShortcutLabel("← →") }
             }
 
+            Section {
+                Toggle("Allow control from the command line", isOn: $preferences.allowsCommandLineControl)
+                LabeledContent("Command") {
+                    HStack {
+                        Text("ownrecord")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Button(commandInstalled ? "Installed" : "Install…") { installCommand() }
+                            .disabled(commandInstalled)
+                    }
+                }
+            } header: {
+                Text("Command Line")
+            } footer: {
+                Text("The ownrecord command lets scripts and AI agents such as Claude Code record, edit and export with OwnRecord. Run “ownrecord help” in Terminal to see what it can do. Recordings it starts show the usual controls, and only apps running as you can use it. Install puts the command in /usr/local/bin.")
+            }
+
             Section("Storage") {
                 LabeledContent("Recordings folder") {
                     HStack {
@@ -88,7 +107,24 @@ struct SettingsView: View {
         .task {
             permissions.refresh()
             locales = TranscriptionEngine.supportedLocales
+            commandInstalled = CommandLineInstaller.isInstalled
         }
+        .alert("Couldn't install the command", isPresented: Binding(get: { installError != nil },
+                                                                    set: { if !$0 { installError = nil } })) {
+            Button("OK") {}
+        } message: {
+            Text(installError ?? "")
+        }
+    }
+
+    private func installCommand() {
+        do {
+            try CommandLineInstaller.install()
+        } catch is CancellationError {
+        } catch {
+            installError = error.localizedDescription
+        }
+        commandInstalled = CommandLineInstaller.isInstalled
     }
 }
 
