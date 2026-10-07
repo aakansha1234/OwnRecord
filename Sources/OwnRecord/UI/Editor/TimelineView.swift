@@ -1,12 +1,11 @@
 import SwiftUI
 
-/// Filmstrip with sections, trim handles, playhead scrubbing and a subtitle lane.
+/// Filmstrip with sections, playhead scrubbing and a subtitle lane.
 struct TimelineView: View {
     @Bindable var model: EditorModel
     @State private var scrubbing = false
 
     private let stripHeight: CGFloat = 58
-    private let handleWidth: CGFloat = 12
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -18,7 +17,6 @@ struct TimelineView: View {
                     if model.isSilenceSheetPresented {
                         pausesPreview(width: width)
                     }
-                    trimOverlay(width: width)
                     if let cues = model.recording.transcript?.cues, !cues.isEmpty {
                         cueLane(cues: cues, width: width)
                             .offset(y: stripHeight + 8)
@@ -120,46 +118,6 @@ struct TimelineView: View {
         .allowsHitTesting(false)
     }
 
-    private func trimOverlay(width: CGFloat) -> some View {
-        let start = x(model.trimStart, width: width)
-        let end = x(model.trimEnd, width: width)
-        return ZStack(alignment: .topLeading) {
-            // Dim the parts that won't be exported.
-            Rectangle().fill(Color.black.opacity(0.55))
-                .frame(width: max(0, start), height: stripHeight)
-            Rectangle().fill(Color.black.opacity(0.55))
-                .frame(width: max(0, width - end), height: stripHeight)
-                .offset(x: end)
-
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(Color.yellow, lineWidth: 3)
-                .frame(width: max(handleWidth * 2, end - start), height: stripHeight)
-                .offset(x: start)
-                .allowsHitTesting(false)
-
-            TrimHandle(edge: .leading)
-                .frame(width: handleWidth, height: stripHeight)
-                .offset(x: start)
-                .highPriorityGesture(
-                    DragGesture(coordinateSpace: .named("timeline"))
-                        .onChanged { value in
-                            model.pauseForSeek()
-                            model.setTrimStart(time(at: value.location.x, width: width))
-                        }
-                )
-            TrimHandle(edge: .trailing)
-                .frame(width: handleWidth, height: stripHeight)
-                .offset(x: max(start + handleWidth, end - handleWidth))
-                .highPriorityGesture(
-                    DragGesture(coordinateSpace: .named("timeline"))
-                        .onChanged { value in
-                            model.pauseForSeek()
-                            model.setTrimEnd(time(at: value.location.x, width: width))
-                        }
-                )
-        }
-    }
-
     private func cueLane(cues: [SubtitleCue], width: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.05))
@@ -219,25 +177,6 @@ struct TimelineView: View {
     }
 }
 
-private struct TrimHandle: View {
-    let edge: HorizontalEdge
-
-    var body: some View {
-        UnevenRoundedRectangle(
-            topLeadingRadius: edge == .leading ? 6 : 0, bottomLeadingRadius: edge == .leading ? 6 : 0,
-            bottomTrailingRadius: edge == .trailing ? 6 : 0, topTrailingRadius: edge == .trailing ? 6 : 0,
-            style: .continuous
-        )
-        .fill(Color.yellow)
-        .overlay(
-            Capsule().fill(Color.black.opacity(0.5)).frame(width: 2, height: 18)
-        )
-        .contentShape(Rectangle().inset(by: -6))
-        .pointerStyle(.frameResize(position: edge == .leading ? .leading : .trailing))
-        .help(edge == .leading ? "Drag to trim the start" : "Drag to trim the end")
-    }
-}
-
 /// One section on the filmstrip.
 private struct SectionBlock: View {
     let section: TimelineSection
@@ -272,7 +211,7 @@ private struct SectionBlock: View {
                 .padding(7)
             }
             if isCurrent {
-                // Inset so it stays visible inside the yellow trim frame.
+                // Inset to stay clear of the strip's rounded corners.
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .strokeBorder(Color.white, lineWidth: 2)
                     .shadow(color: .black.opacity(0.5), radius: 1)

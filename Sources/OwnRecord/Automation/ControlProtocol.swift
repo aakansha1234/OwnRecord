@@ -141,7 +141,7 @@ enum ControlCoding {
 enum ControlCommand: String, CaseIterable {
     case status, sources, list, show, open, rename, delete
     case record, wait, stop, pause, resume, discard
-    case trim, cut, restore, silences, blur, unblur, set, transcribe, transcript
+    case cut, restore, silences, crop, blur, unblur, set, transcribe, transcript
     case frame, export
 }
 
@@ -198,13 +198,6 @@ struct StopParams: Codable {
     var open: Bool?
 }
 
-struct TrimParams: Codable {
-    var recording: String
-    var start: Double?
-    var end: Double?
-    var reset: Bool?
-}
-
 /// A stretch of a recording, in recording time.
 struct RangeParams: Codable {
     var recording: String
@@ -224,6 +217,16 @@ struct SilencesParams: Codable {
     var padding: Double?
     /// nil only lists the pauses.
     var apply: SilenceAction?
+}
+
+struct CropParams: Codable {
+    var recording: String
+    /// x, y, width and height as fractions (0...1) of the screen recording, from its top-left corner.
+    var rect: [Double]?
+    /// The same in pixels of the screen recording.
+    var pixels: [Double]?
+    /// Show the whole screen recording again.
+    var reset: Bool?
 }
 
 struct BlurParams: Codable {
@@ -271,7 +274,7 @@ struct FrameParams: Codable {
     var time: Double?
     /// `time` is a time in the edited video rather than in the recording.
     var videoTime: Bool?
-    /// The screen recording as captured, without the edit's layout, camera, blurs and subtitles.
+    /// The screen recording as captured, without the edit's crop, layout, camera, blurs and subtitles.
     var raw: Bool?
     /// Longest side in pixels.
     var size: Int?
@@ -365,7 +368,7 @@ struct RecordingInfo: Codable {
     var createdAt: Date
     /// Seconds in the recording.
     var duration: Double
-    /// Seconds in the edited video (trimmed, cut parts left out).
+    /// Seconds in the edited video (cut parts left out).
     var videoDuration: Double
     var captureMode: CaptureMode
     var source: String
@@ -385,7 +388,7 @@ struct RecordingDetails: Codable {
         /// Recording time.
         var start: Double
         var end: Double
-        /// Where the section plays in the edited video; nil when it's cut or trimmed away.
+        /// Where the section plays in the edited video; nil when it's cut.
         var videoStart: Double?
         var videoEnd: Double?
         var deleted: Bool
@@ -405,8 +408,11 @@ struct RecordingDetails: Codable {
     }
 
     var recording: RecordingInfo
-    var trimStart: Double
-    var trimEnd: Double?
+    /// The part of the screen recording the video shows: x, y, width and height as fractions of it;
+    /// nil for all of it.
+    var crop: [Double]?
+    /// The same in pixels.
+    var cropPixels: [Int]?
     var sections: [Section]
     var layout: LayoutStyle
     var camera: CameraOverlayStyle

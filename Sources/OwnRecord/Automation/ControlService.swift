@@ -37,10 +37,10 @@ final class ControlService {
         case .pause: result = try setPaused(true)
         case .resume: result = try setPaused(false)
         case .discard: result = try await discard()
-        case .trim: result = try trim(params())
         case .cut: result = try cut(params())
         case .restore: result = try restore(params())
         case .silences: result = try await silences(params())
+        case .crop: result = try crop(params())
         case .blur: result = try blur(params())
         case .unblur: result = try unblur(params())
         case .set: result = try changeSettings(params())
@@ -161,7 +161,9 @@ final class ControlService {
             paths["thumbnail"] = files.thumbnail.path
             if recording.hasCamera { paths["camera"] = files.camera.path }
         }
-        return RecordingDetails(recording: info(recording), trimStart: edit.trimStart, trimEnd: edit.trimEnd,
+        let crop = edit.crop?.pixelRect(in: recording.pixelSize)
+        return RecordingDetails(recording: info(recording), crop: edit.crop.map { [$0.x, $0.y, $0.width, $0.height] },
+                                cropPixels: crop.map { [$0.minX, $0.minY, $0.width, $0.height].map { Int($0) } },
                                 sections: sections, layout: edit.layout, camera: edit.camera, subtitles: edit.subtitles,
                                 audio: edit.audio, transcriptLocale: recording.transcript?.localeIdentifier,
                                 subtitleCount: recording.transcript?.cues.count, files: paths)
@@ -382,33 +384,6 @@ final class ControlService {
 
     // MARK: Editing
 
-    private func trim(_ params: TrimParams) throws -> EditResult {
-        let recording = try find(params.recording)
-        let duration = recording.duration
-        var edit = recording.edit
-        if params.reset == true {
-            edit.trimStart = 0
-            edit.trimEnd = nil
-        }
-        if let start = params.start {
-            let time = snapped(start, in: recording)
-            edit.trimStart = time < 0.05 ? 0 : time
-        }
-        if let end = params.end {
-            let time = snapped(end, in: recording)
-            edit.trimEnd = time > duration - 0.05 ? nil : time
-        }
-        guard edit.trimStart <= (edit.trimEnd ?? duration) - 0.5 else {
-            throw ControlError("The video has to start at least half a second before it ends (the recording is \(ControlFormat.seconds(duration)) long).")
-        }
-        try requireVideo(edit, recording)
-        let trimmed = update(recording, "Trim") { $0.edit = edit }
-        let message = edit.trimStart == 0 && edit.trimEnd == nil
-            ? "The video isn't trimmed."
-            : "Trimmed to \(ControlFormat.span(edit.trimStart..<(edit.trimEnd ?? duration)))."
-        return EditResult(message: "\(message) \(videoLength(trimmed))", recording: info(trimmed))
-    }
-
     private func cut(_ params: RangeParams) throws -> EditResult {
         let recording = try find(params.recording)
         let range = try self.range(params, in: recording)
@@ -463,6 +438,21 @@ final class ControlService {
                             pauses: pauses.map { [$0.lowerBound, $0.upperBound] },
                             total: pauses.reduce(0) { $0 + $1.upperBound - $1.lowerBound },
                             applied: pauses.isEmpty ? nil : params.apply, recording: info(updated))
+    }
+
+    private func crop(_ params: CropParams) throws -> EditResult {
+        let recording = try find(params.recording)
+        var crop: CropRect?
+        if params.reset != true {
+            crop = try CropRect(rect: params.rect, pixels: params.pixels, in: recording.pixelSize)
+        }
+        let size = "\(recording.pixelWidth) × \(recording.pixelHeight)"
+        let updated = update(recording, crop == nil ? "Reset Crop" : "Crop") { $0.edit.crop = crop }
+        guard let pixels = crop?.pixelRect(in: recording.pixelSize) else {
+            return EditResult(message: "The video shows the whole \(size) screen recording.", recording: info(updated))
+        }
+        return EditResult(message: "Cropped to \(Int(pixels.width)) × \(Int(pixels.height)) at \(Int(pixels.minX)),\(Int(pixels.minY)) of the \(size) screen recording.",
+                          recording: info(updated))
     }
 
     private func blur(_ params: BlurParams) throws -> EditResult {
@@ -602,7 +592,7 @@ final class ControlService {
             let size = recording.pixelSize.scaled(min(1, longSide / max(recording.pixelSize.width, recording.pixelSize.height, 1)))
             image = try await Self.image(from: AVURLAsset(url: files.screen), at: time, maxSize: size, videoComposition: nil)
         } else {
-            let ranges = recording.edit.keptRanges(duration: .infinity, applyingTrim: true)
+            let ranges = recording.edit.keptRanges(duration: .infinity)
             let built = try await CompositionBuilder.build(recording: recording, files: files, ranges: ranges)
             var output = 0.0
             if params.videoTime == true {
@@ -612,7 +602,7 @@ final class ControlService {
                 }
             } else if let requested = params.time {
                 guard built.timeline.contains(source: requested) else {
-                    let reason = requested < 0 || requested >= recording.duration ? "isn't in the recording" : "is trimmed or cut from the video"
+                    let reason = requested < 0 || requested >= recording.duration ? "isn't in the recording" : "is cut from the video"
                     throw ControlError("\(ControlFormat.seconds(requested)) \(reason). Add --raw to see the recording as captured.")
                 }
                 output = built.timeline.outputTime(forSource: requested)
@@ -621,7 +611,7 @@ final class ControlService {
             output = min(output, max(0, built.duration - 1 / Double(max(1, recording.frameRate))))
             time = built.timeline.sourceTime(forOutput: output)
             videoTime = output
-            let canvas = LayoutEngine.canvasSize(source: built.sourceSize, aspect: recording.edit.layout.aspect)
+            let canvas = LayoutEngine.canvasSize(source: built.sourceSize, edit: recording.edit)
             let size = canvas.scaled(min(1, longSide / max(canvas.width, canvas.height))).evenRounded()
             let composition = CompositionBuilder.videoComposition(for: built, recording: recording, renderSize: size,
                                                                   highQuality: true)
@@ -667,7 +657,7 @@ final class ControlService {
                 try subtitles.write(to: subtitleURL, atomically: true, encoding: .utf8)
                 paths.append(subtitleURL.path)
             }
-            let canvas = LayoutEngine.canvasSize(source: recording.pixelSize, aspect: recording.edit.layout.aspect)
+            let canvas = LayoutEngine.canvasSize(source: recording.pixelSize, edit: recording.edit)
             let size = VideoExporter.renderSize(canvas: canvas, ratio: recording.edit.layout.aspect.ratio, options: options)
             return FilesResult(files: paths, name: name, width: Int(size.width), height: Int(size.height),
                                duration: recording.editedDuration)
@@ -761,7 +751,7 @@ final class ControlService {
     }
 
     private func requireVideo(_ edit: EditSettings, _ recording: Recording) throws {
-        guard !edit.keptRanges(duration: recording.duration, applyingTrim: true).isEmpty else {
+        guard !edit.keptRanges(duration: recording.duration).isEmpty else {
             throw ControlError("That would leave nothing in the video.")
         }
     }
@@ -839,8 +829,37 @@ private extension PermissionKind {
 
 // MARK: - Edits
 
+extension CropRect {
+    /// A crop from `ownrecord crop`'s fractions or pixels of a screen recording of `size`; nil when
+    /// it's the whole recording.
+    init?(rect: [Double]?, pixels: [Double]?, in size: CGSize) throws {
+        let area: CGRect
+        if let values = rect {
+            guard values.count == 4 else { throw ControlError("Give the crop as x,y,width,height.") }
+            area = CGRect(x: values[0], y: values[1], width: values[2], height: values[3])
+        } else if let values = pixels {
+            guard values.count == 4 else { throw ControlError("Give the crop as x,y,width,height.") }
+            let width = max(1, size.width), height = max(1, size.height)
+            area = CGRect(x: values[0] / width, y: values[1] / height, width: values[2] / width, height: values[3] / height)
+        } else {
+            throw ControlError("Give the part to keep with --rect (fractions of the recording) or --px (pixels).")
+        }
+        guard area.minX >= 0, area.minY >= 0, area.width > 0, area.height > 0, area.maxX <= 1.0001, area.maxY <= 1.0001 else {
+            throw ControlError(rect != nil
+                ? "--rect takes fractions of the recording (0 to 1) from its top-left corner. Use --px for pixels."
+                : "The crop has to be inside the recording, which is \(Int(size.width)) × \(Int(size.height)) pixels.")
+        }
+        guard area.width >= Self.minimumSide - 1e-9, area.height >= Self.minimumSide - 1e-9 else {
+            throw ControlError("The crop has to keep at least \(Int(Self.minimumSide * 100))% of the recording's width and height.")
+        }
+        let crop = CropRect(rect: area)
+        if crop.isFull { return nil }
+        self = crop
+    }
+}
+
 extension EditSettings {
-    /// The groups `ownrecord set` changes. Sections and the trim have commands of their own.
+    /// The groups `ownrecord set` changes. Sections have commands of their own.
     static let settableGroups = ["layout", "camera", "subtitles", "audio"]
 
     /// A copy with settings changed by path, e.g. "layout.aspect" to "portrait". Values are JSON

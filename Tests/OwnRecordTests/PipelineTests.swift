@@ -147,11 +147,12 @@ import Testing
         #expect(subtitle.r < 150)
     }
 
-    @Test func exportsTrimmedMP4AndGIF() async throws {
+    @Test func exportsEditedMP4AndGIF() async throws {
         let folder = try Self.makeFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         var (recording, files) = try await Self.makeRecording(folder: folder)
-        recording.edit.trimStart = 0.5
+        recording.edit.split(at: 0.5, duration: recording.duration)
+        recording.edit.sections[0].isDeleted = true
         recording.edit.layout.aspect = .square
         recording.edit.layout.background = .aurora
         recording.edit.layout.padding = 0.08
@@ -182,6 +183,26 @@ import Testing
         try await VideoExporter.export(recording: recording, files: files, options: options, to: gifURL) { _ in }
         let source = try #require(CGImageSourceCreateWithURL(gifURL as CFURL, nil))
         #expect(CGImageSourceGetCount(source) >= 12)
+    }
+
+    @Test func exportsTheCroppedScreen() async throws {
+        let folder = try Self.makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var (recording, files) = try await Self.makeRecording(folder: folder)
+        recording.transcript = nil
+        recording.edit.crop = CropRect(pixels: CGRect(x: 100, y: 40, width: 320, height: 200), in: recording.pixelSize)
+
+        var options = ExportOptions()
+        options.resolution = .original
+        let url = folder.appendingPathComponent("cropped.mp4")
+        try await VideoExporter.export(recording: recording, files: files, options: options, to: url) { _ in }
+        let track = try #require(try await AVURLAsset(url: url).loadTracks(withMediaType: .video).first)
+        // The video takes the crop's size and shape.
+        #expect(try await track.load(.naturalSize) == CGSize(width: 320, height: 200))
+        // So does the screen clip for iMovie.
+        options.format = .imovie
+        #expect(IMovieExporter.screenClipSize(source: recording.pixelSize, edit: recording.edit, options: options)
+            == CGSize(width: 320, height: 200))
     }
 
     @Test func exportsSectionsWithCutsAndHiddenScreen() async throws {

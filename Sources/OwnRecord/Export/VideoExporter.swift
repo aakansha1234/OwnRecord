@@ -121,10 +121,10 @@ enum VideoExporter {
 
     static func export(recording: Recording, files: RecordingFiles, options: ExportOptions, to url: URL,
                        progress: @escaping @Sendable (Double) -> Void) async throws {
-        // Trimmed and deleted parts are left out; the rest plays back to back.
-        let ranges = recording.edit.keptRanges(duration: .infinity, applyingTrim: true)
+        // Deleted sections are left out; the rest plays back to back.
+        let ranges = recording.edit.keptRanges(duration: .infinity)
         let built = try await CompositionBuilder.build(recording: recording, files: files, ranges: ranges)
-        let canvas = LayoutEngine.canvasSize(source: built.sourceSize, aspect: recording.edit.layout.aspect)
+        let canvas = LayoutEngine.canvasSize(source: built.sourceSize, edit: recording.edit)
         let size = renderSize(canvas: canvas, ratio: recording.edit.layout.aspect.ratio, options: options)
         let videoComposition = CompositionBuilder.videoComposition(for: built, recording: recording, renderSize: size,
                                                                    highQuality: true)

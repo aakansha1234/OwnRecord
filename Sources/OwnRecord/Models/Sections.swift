@@ -123,13 +123,10 @@ extension EditSettings {
     }
 
     /// The parts of the recording that make it into the video, in order and merged.
-    /// - Parameter applyingTrim: Also cut away everything outside the trim handles.
-    func keptRanges(duration: Double, applyingTrim: Bool) -> [Range<Double>] {
-        let lower = applyingTrim ? trimStart : 0
-        let upper = applyingTrim ? min(trimEnd ?? duration, duration) : duration
+    func keptRanges(duration: Double) -> [Range<Double>] {
         var ranges: [Range<Double>] = []
         for index in sections.indices where !sections[index].isDeleted {
-            let range = self.range(ofSectionAt: index, duration: duration).clamped(to: lower..<max(lower, upper))
+            let range = self.range(ofSectionAt: index, duration: duration)
             guard range.upperBound - range.lowerBound > 1e-6 else { continue }
             if let last = ranges.last, abs(last.upperBound - range.lowerBound) < 1e-6 {
                 ranges[ranges.count - 1] = last.lowerBound..<range.upperBound
@@ -140,10 +137,10 @@ extension EditSettings {
         return ranges
     }
 
-    /// Recording-time points where something changes: section starts plus the trim points.
+    /// Recording-time points where something changes: section starts plus both ends.
     func editPoints(duration: Double) -> [Double] {
         var points = Set(sections.map(\.start))
-        points.formUnion([0, duration, trimStart, trimEnd ?? duration])
+        points.formUnion([0, duration])
         return points.filter { $0 >= 0 && $0 <= duration }.sorted()
     }
 
@@ -196,8 +193,8 @@ extension Range where Bound == Double {
 
 // MARK: - Timeline map
 
-/// Maps between recording time and the edited video's timeline, where deleted and trimmed parts
-/// are gone and the remaining pieces play back to back.
+/// Maps between recording time and the edited video's timeline, where deleted sections are gone
+/// and the remaining pieces play back to back.
 struct TimelineMap: Hashable, Sendable {
     struct Piece: Hashable, Sendable {
         var sourceStart: Double
@@ -280,9 +277,9 @@ struct TimelineMap: Hashable, Sendable {
 }
 
 extension Recording {
-    /// The edited video's timeline: trimmed, with deleted sections removed.
+    /// The edited video's timeline, with deleted sections removed.
     var editedTimeline: TimelineMap {
-        TimelineMap(ranges: edit.keptRanges(duration: duration, applyingTrim: true))
+        TimelineMap(ranges: edit.keptRanges(duration: duration))
     }
 
     var editedDuration: Double { editedTimeline.duration }

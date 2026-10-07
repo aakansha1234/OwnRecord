@@ -7,7 +7,7 @@ enum CompositionError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingScreenVideo: "The screen recording file is missing or unreadable."
-        case .emptyRange: "The trimmed recording is empty."
+        case .emptyRange: "Every section of the recording is deleted."
         }
     }
 }
@@ -29,8 +29,8 @@ enum CompositionBuilder {
         let timeline: TimelineMap
     }
 
-    /// - Parameter ranges: Recording-time ranges to include, played back to back (trimmed and
-    ///   deleted parts left out). nil includes everything.
+    /// - Parameter ranges: Recording-time ranges to include, played back to back (deleted
+    ///   sections left out). nil includes everything.
     static func build(recording: Recording, files: RecordingFiles, ranges: [Range<Double>]?) async throws -> Result {
         let screenAsset = AVURLAsset(url: files.screen)
         guard let screenVideo = try await screenAsset.loadTracks(withMediaType: .video).first else {

@@ -6,17 +6,17 @@ enum EditorCommand: Int, CaseIterable {
     case playPause = 1, goToStart, previousFrame, nextFrame, backOneSecond, forwardOneSecond, previousEdit, nextEdit
     case split, deleteSection, toggleScreen, toggleCamera, toggleAudio, joinNext, resetSection
     case cameraLeft, cameraRight, cameraUp, cameraDown, cameraEverywhere
-    case trimStart, trimEnd, resetTrim
     case showShortcuts
     case blurArea, pixelateArea, cancelEditing
     case splitAtSilences
+    case crop, applyCrop
 
     enum Group: String, CaseIterable {
         case playback = "Playback"
         case sections = "Sections"
         case camera = "Camera"
         case blur = "Blur"
-        case trim = "Trim"
+        case crop = "Crop"
     }
 
     var group: Group {
@@ -28,10 +28,10 @@ enum EditorCommand: Int, CaseIterable {
             .sections
         case .cameraLeft, .cameraRight, .cameraUp, .cameraDown, .cameraEverywhere:
             .camera
-        case .trimStart, .trimEnd, .resetTrim:
-            .trim
         case .blurArea, .pixelateArea, .cancelEditing:
             .blur
+        case .crop, .applyCrop:
+            .crop
         }
     }
 
@@ -58,14 +58,13 @@ enum EditorCommand: Int, CaseIterable {
         case .cameraUp: "Move Camera Up"
         case .cameraDown: "Move Camera Down"
         case .cameraEverywhere: "Apply Camera to All Sections"
-        case .trimStart: "Trim Start to Playhead"
-        case .trimEnd: "Trim End to Playhead"
-        case .resetTrim: "Reset Trim"
         case .showShortcuts: "Keyboard Shortcuts"
         case .blurArea: "Blur Area"
         case .pixelateArea: "Pixelate Area"
         case .cancelEditing: "Deselect"
         case .splitAtSilences: "Split at Silences…"
+        case .crop: "Crop…"
+        case .applyCrop: "Apply Crop"
         }
     }
 
@@ -77,12 +76,14 @@ enum EditorCommand: Int, CaseIterable {
         case .toggleCamera: "Hide or show the camera"
         case .toggleAudio: "Mute or unmute audio"
         case .playPause: "Play / pause"
-        case .previousEdit: "Previous split or trim point"
-        case .nextEdit: "Next split or trim point"
+        case .previousEdit: "Previous split"
+        case .nextEdit: "Next split"
         case .blurArea: "Blur an area"
         case .pixelateArea: "Pixelate an area"
         case .cancelEditing: "Cancel or deselect"
         case .splitAtSilences: "Split at silences"
+        case .crop: "Crop the screen"
+        case .applyCrop: "Apply the crop"
         default: title
         }
     }
@@ -102,6 +103,8 @@ enum EditorCommand: Int, CaseIterable {
         // Shifted letters are given in upper case: a lower-case key with Shift would also catch the plain key.
         case .split: "s"
         case .splitAtSilences: "S"
+        case .crop: "C"
+        case .applyCrop: "\r"
         case .blurArea: "b"
         case .pixelateArea: "B"
         case .cancelEditing: "\u{1b}"
@@ -109,16 +112,14 @@ enum EditorCommand: Int, CaseIterable {
         case .toggleScreen: "h"
         case .toggleCamera: "c"
         case .toggleAudio: "m"
-        case .trimStart: "i"
-        case .trimEnd: "o"
         case .showShortcuts: "/"
-        case .joinNext, .resetSection, .cameraEverywhere, .resetTrim: ""
+        case .joinNext, .resetSection, .cameraEverywhere: ""
         }
     }
 
     var modifiers: NSEvent.ModifierFlags {
         switch self {
-        case .backOneSecond, .forwardOneSecond, .pixelateArea, .splitAtSilences: [.shift]
+        case .backOneSecond, .forwardOneSecond, .pixelateArea, .splitAtSilences, .crop: [.shift]
         case .cameraLeft, .cameraRight, .cameraUp, .cameraDown: [.option]
         case .showShortcuts: [.command]
         default: []
@@ -137,6 +138,7 @@ enum EditorCommand: Int, CaseIterable {
         case .nextEdit, .cameraDown: key = "↓"
         case .deleteSection: key = "⌫"
         case .cancelEditing: key = "Esc"
+        case .applyCrop: key = "↩"
         default:
             guard !keyEquivalent.isEmpty else { return nil }
             key = keyEquivalent.uppercased()
@@ -169,7 +171,10 @@ enum EditorCommand: Int, CaseIterable {
         case .toggleScreen: return section.showsScreen ? "Hide Screen in Section" : "Show Screen in Section"
         case .toggleCamera: return section.showsCamera ? "Hide Camera in Section" : "Show Camera in Section"
         case .toggleAudio: return section.mutesAudio ? "Unmute Section" : "Mute Section"
-        case .cancelEditing: return model.drawingRedaction != nil ? "Cancel Blur" : "Deselect"
+        case .cancelEditing:
+            if model.isCropping { return "Cancel Crop" }
+            return model.drawingRedaction != nil ? "Cancel Blur" : "Deselect"
+        case .crop: return model.isCropping ? "Apply Crop" : title
         default: return title
         }
     }
@@ -183,9 +188,9 @@ enum EditorCommand: Int, CaseIterable {
         case .toggleCamera, .cameraLeft, .cameraRight, .cameraUp, .cameraDown: return model.hasCameraTrack
         case .cameraEverywhere: return model.hasCameraTrack && !model.cameraPlacementIsUniform
         case .toggleAudio: return model.recording.hasAudio
-        case .resetTrim: return model.isTrimmed
         case .blurArea, .pixelateArea: return model.canRedact
-        case .cancelEditing: return model.canCancelRedactionEditing
+        case .cancelEditing: return model.isCropping || model.canCancelRedactionEditing
+        case .applyCrop: return model.isCropping
         case .splitAtSilences: return model.recording.hasAudio
         default: return true
         }
@@ -215,14 +220,13 @@ enum EditorCommand: Int, CaseIterable {
         case .cameraUp: model.nudgeCamera(toward: .top)
         case .cameraDown: model.nudgeCamera(toward: .bottom)
         case .cameraEverywhere: model.applyCameraToAllSections()
-        case .trimStart: model.setTrimStartAtPlayhead()
-        case .trimEnd: model.setTrimEndAtPlayhead()
-        case .resetTrim: model.resetTrim()
         case .showShortcuts: model.isShortcutsPresented.toggle()
         case .blurArea: model.beginRedaction(.blur)
         case .pixelateArea: model.beginRedaction(.pixelate)
-        case .cancelEditing: model.cancelRedactionEditing()
+        case .cancelEditing: if model.isCropping { model.cancelCropping() } else { model.cancelRedactionEditing() }
         case .splitAtSilences: model.showSilenceSheet()
+        case .crop: model.toggleCropping()
+        case .applyCrop: model.finishCropping()
         }
     }
 }

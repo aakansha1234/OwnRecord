@@ -139,6 +139,8 @@ private struct LayoutInspector: View {
     @Bindable var model: EditorModel
 
     var body: some View {
+        CropSection(model: model)
+
         InspectorSection("Aspect Ratio") {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 5), spacing: 6) {
                 ForEach(AspectPreset.allCases) { preset in
@@ -147,7 +149,7 @@ private struct LayoutInspector: View {
                         model.recording.edit.layout.aspect = preset
                     } label: {
                         VStack(spacing: 4) {
-                            AspectGlyph(ratio: preset.ratio ?? model.recording.pixelSize.aspectRatio)
+                            AspectGlyph(ratio: preset.ratio ?? model.recording.edit.screenCrop(in: model.recordingSize).size.aspectRatio)
                                 .frame(width: 26, height: 22)
                             Text(preset.title).font(.system(size: 10, weight: .medium))
                         }
@@ -197,6 +199,80 @@ private struct LayoutInspector: View {
             SliderRow(title: "Corner radius", value: $model.recording.edit.layout.cornerRadius, range: 0...0.08)
             SliderRow(title: "Shadow", value: $model.recording.edit.layout.shadow, range: 0...1)
                 .disabled(model.recording.edit.layout.padding < 0.001)
+        }
+    }
+}
+
+/// What part of the screen recording the video shows. The crop is chosen in the preview; while
+/// choosing, its position and size can be typed in pixels.
+private struct CropSection: View {
+    @Bindable var model: EditorModel
+
+    var body: some View {
+        InspectorSection("Crop") {
+            if let pixels = model.cropDraftPixels {
+                Grid(horizontalSpacing: 10, verticalSpacing: 8) {
+                    GridRow {
+                        PixelField(title: "X", value: pixels.minX) { model.setCropDraft(x: $0) }
+                        PixelField(title: "Y", value: pixels.minY) { model.setCropDraft(y: $0) }
+                    }
+                    GridRow {
+                        PixelField(title: "W", value: pixels.width) { model.setCropDraft(width: $0) }
+                        PixelField(title: "H", value: pixels.height) { model.setCropDraft(height: $0) }
+                    }
+                }
+                note("In pixels of the \(Int(model.recordingSize.width)) × \(Int(model.recordingSize.height)) recording. Drag the crop in the preview to move it, or its handles to resize it: ⇧ keeps the shape, ⌥ resizes around the center.")
+            } else {
+                let size = model.recordingSize
+                let crop = model.recording.edit.crop?.pixelRect(in: size)
+                HStack(spacing: 8) {
+                    Image(systemName: "crop")
+                        .foregroundStyle(crop == nil ? Color.secondary : Color.accentColor)
+                    Text(crop.map { "\(Int($0.width)) × \(Int($0.height)) of \(Int(size.width)) × \(Int(size.height))" }
+                         ?? "The whole screen")
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if crop != nil {
+                        Button("Reset") { model.resetCrop() }
+                            .help("Show the whole screen recording again")
+                    }
+                    Button(crop == nil ? "Crop…" : "Edit…") { model.beginCropping() }
+                        .help("Choose the part of the screen to show (\(EditorCommand.crop.shortcutLabel ?? ""))")
+                        .disabled(model.loadState != .ready)
+                }
+                .controlSize(.small)
+                note("Leave out the menu bar, the Dock or other windows. The background, camera and subtitles are laid out around what's left.")
+            }
+        }
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct PixelField: View {
+    let title: String
+    let value: CGFloat
+    let set: (CGFloat) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 12, alignment: .leading)
+            TextField(title, value: Binding(get: { Int(value) }, set: { set(CGFloat($0)) }),
+                      format: .number.grouping(.never))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12).monospacedDigit())
+                .multilineTextAlignment(.trailing)
+                .labelsHidden()
+                .onSubmit { endTextEditing() }
         }
     }
 }

@@ -31,7 +31,7 @@ struct SilenceSheet: View {
                         .frame(maxWidth: .infinity, minHeight: 90)
                 case .ready(let levels):
                     LevelGraph(levels: levels, threshold: model.silenceThreshold, pauses: pauses,
-                               kept: model.recording.edit.keptRanges(duration: model.duration, applyingTrim: true),
+                               kept: model.recording.edit.keptRanges(duration: model.duration),
                                duration: model.duration)
                         .frame(height: 90)
                 }

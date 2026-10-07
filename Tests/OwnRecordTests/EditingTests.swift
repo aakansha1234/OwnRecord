@@ -45,29 +45,28 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         #expect(!mutate(&edit) { $0.joinSection(at: 0) })
     }
 
-    @Test func keptRangesSkipDeletedSectionsAndTrim() {
+    @Test func keptRangesSkipDeletedSections() {
         var edit = EditSettings()
         edit.split(at: 2, duration: 10)
         edit.split(at: 4, duration: 10)
         edit.split(at: 6, duration: 10)
         edit.sections[1].isDeleted = true
-        #expect(edit.keptRanges(duration: 10, applyingTrim: false) == [0..<2, 4..<10])
+        #expect(edit.keptRanges(duration: 10) == [0..<2, 4..<10])
 
         // Adjacent kept sections merge into one range.
         edit.sections[1].isDeleted = false
-        #expect(edit.keptRanges(duration: 10, applyingTrim: false) == [0..<10])
+        #expect(edit.keptRanges(duration: 10) == [0..<10])
 
+        edit.sections[0].isDeleted = true
         edit.sections[2].isDeleted = true
-        edit.trimStart = 1
-        edit.trimEnd = 8
-        #expect(edit.keptRanges(duration: 10, applyingTrim: true) == [1..<4, 6..<8])
-        #expect(edit.keptRanges(duration: .infinity, applyingTrim: false).last?.upperBound == .infinity)
+        #expect(edit.keptRanges(duration: 10) == [2..<4, 6..<10])
+        #expect(edit.keptRanges(duration: .infinity).last?.upperBound == .infinity)
     }
 
-    @Test func editPointsIncludeSplitsAndTrim() {
+    @Test func editPointsAreSplitsAndEnds() {
         var edit = EditSettings()
         edit.split(at: 3, duration: 10)
-        edit.trimEnd = 9
+        edit.split(at: 9, duration: 10)
         #expect(edit.editPoints(duration: 10) == [0, 3, 9, 10])
     }
 
@@ -84,7 +83,6 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
          "audio":{"microphoneVolume":1,"systemVolume":0.5}}
         """
         let edit = try JSONDecoder().decode(EditSettings.self, from: Data(json.utf8))
-        #expect(edit.trimStart == 1)
         #expect(edit.sections.count == 1)
         #expect(edit.sections[0].start == 0)
         #expect(edit.sections[0].showsCamera == false)
@@ -171,7 +169,7 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
     }
 
     @Test func subtitlesFollowTheEditedTimeline() {
-        let cues = [SubtitleCue(start: 0.5, end: 1.5, text: "a"),  // starts before the trim
+        let cues = [SubtitleCue(start: 0.5, end: 1.5, text: "a"),  // starts before the video
                     SubtitleCue(start: 3.2, end: 4.8, text: "b"),  // entirely cut
                     SubtitleCue(start: 2.5, end: 5.5, text: "c"),  // spans a cut
                     SubtitleCue(start: 8.5, end: 9, text: "d")]
@@ -245,20 +243,20 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         #expect(layout.camera?.opacity == 1)
     }
 
-    @Test func noTransitionFromTrimmedAwayParts() {
+    @Test func noTransitionFromDeletedParts() {
         var edit = edit()
         edit.sections[1].camera = CameraPlacement(position: .topLeft)
         let settled = LayoutEngine.layout(canvas: canvas, source: canvas, edit: edit, hasCamera: true, at: 3).cameraRect!
 
         // The export starts at section 2, so it shouldn't slide in from section 1's position.
-        edit.trimStart = 2
-        let trimmed = TimelineMap(ranges: edit.keptRanges(duration: 10, applyingTrim: true))
-        let first = LayoutEngine.layout(canvas: canvas, source: canvas, edit: edit, hasCamera: true, at: 2.05, timeline: trimmed)
+        edit.sections[0].isDeleted = true
+        let late = TimelineMap(ranges: edit.keptRanges(duration: 10))
+        let first = LayoutEngine.layout(canvas: canvas, source: canvas, edit: edit, hasCamera: true, at: 2.05, timeline: late)
         #expect(first.cameraRect == settled)
 
-        // Without the trim, sections that play back to back still animate.
-        edit.trimStart = 0
-        let full = TimelineMap(ranges: edit.keptRanges(duration: 10, applyingTrim: false))
+        // Sections that play back to back still animate.
+        edit.sections[0].isDeleted = false
+        let full = TimelineMap(ranges: edit.keptRanges(duration: 10))
         let moving = LayoutEngine.layout(canvas: canvas, source: canvas, edit: edit, hasCamera: true, at: 2.05, timeline: full)
         #expect(moving.cameraRect != settled)
 
@@ -266,7 +264,7 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         edit.split(at: 3, duration: 10)
         edit.sections[2].isDeleted = true
         edit.sections[3].camera = CameraPlacement(position: .topLeft)
-        let cut = TimelineMap(ranges: edit.keptRanges(duration: 10, applyingTrim: false))
+        let cut = TimelineMap(ranges: edit.keptRanges(duration: 10))
         let afterCut = LayoutEngine.layout(canvas: canvas, source: canvas, edit: edit, hasCamera: true, at: 4.05, timeline: cut)
         #expect(afterCut.cameraRect == settled)
     }
@@ -277,7 +275,7 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         edit.sections[2].mutesAudio = true
         edit.split(at: 6, duration: 10)
         edit.sections[3].mutesAudio = false
-        let timeline = TimelineMap(ranges: edit.keptRanges(duration: 10, applyingTrim: false))
+        let timeline = TimelineMap(ranges: edit.keptRanges(duration: 10))
         #expect(CompositionBuilder.mutedRanges(edit: edit, timeline: timeline) == [2..<6])
         let changes = CompositionBuilder.volumeChanges(volume: 0.8, muted: [0..<1, 2..<6])
         #expect(changes.map(\.time) == [0, 1, 2, 6])
@@ -377,7 +375,7 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         #expect(!model.sections[0].isDeleted)
         #expect(model.hint != nil)
 
-        // Joining the only kept section into a deleted one, or trimming it away, is refused too.
+        // Joining the only kept section into a deleted one is refused too.
         model.seek(to: 1)
         step(model) { model.splitAtPlayhead() }
         model.seek(to: 0.5)
@@ -385,10 +383,7 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         model.seek(to: 1.5)
         step(model) { model.joinWithPrevious() }
         #expect(model.sections.count == 2)
-        model.seek(to: 0.8)
-        step(model) { model.setTrimEndAtPlayhead() }
-        #expect(model.recording.edit.trimEnd == nil)
-        #expect(!model.recording.edit.keptRanges(duration: model.duration, applyingTrim: true).isEmpty)
+        #expect(!model.recording.edit.keptRanges(duration: model.duration).isEmpty)
     }
 
     @Test func seekingDuringPlaybackSticks() async throws {
@@ -430,6 +425,49 @@ private func mutate(_ edit: inout EditSettings, _ change: (inout EditSettings) -
         model.updateCue(second.id, text: "two, edited")
         model.undoManager.undo()
         #expect(model.recording.transcript?.cues.map(\.text) == ["one", "two, edited"])
+    }
+
+    @Test func cropIsChosenOnTheWholeRecordingAndAppliedOnce() async throws {
+        let (model, root) = try await makeModel()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let full = model.canvasSize
+
+        model.beginCropping()
+        #expect(model.isCropping)
+        #expect(model.canvasSize == full)
+        // Dragging only changes the crop being chosen.
+        step(model) { model.setCropDraft(pixels: CGRect(x: 40, y: 20, width: 330, height: 200)) }
+        step(model) { model.setCropDraft(width: 320) }
+        #expect(model.recording.edit.crop == nil)
+        #expect(model.canvasSize == full)
+        #expect(model.cropDraftPixels == CGRect(x: 40, y: 20, width: 320, height: 200))
+
+        step(model) { model.finishCropping() }
+        #expect(!model.isCropping)
+        #expect(model.recording.edit.crop?.pixelRect(in: model.recordingSize) == CGRect(x: 40, y: 20, width: 320, height: 200))
+        #expect(model.canvasSize == CGSize(width: 320, height: 200))
+        #expect(model.undoManager.undoActionName == "Crop")
+
+        // A locked shape fits inside the crop; Esc leaves the crop as it was.
+        model.beginCropping()
+        model.setCropAspect(.square)
+        #expect(model.cropDraftPixels == CGRect(x: 100, y: 20, width: 200, height: 200))
+        EditorCommand.cancelEditing.perform(on: model)
+        #expect(!model.isCropping)
+        #expect(model.canvasSize == CGSize(width: 320, height: 200))
+
+        // Undo while choosing drops the crop being chosen.
+        model.beginCropping()
+        model.undoManager.undo()
+        #expect(!model.isCropping)
+        #expect(model.recording.edit.crop == nil)
+
+        // Leaving the Layout tab applies it.
+        model.beginCropping()
+        model.setCropDraft(pixels: CGRect(x: 0, y: 0, width: 320, height: 400))
+        model.inspectorTab = .camera
+        #expect(!model.isCropping)
+        #expect(model.recording.edit.crop?.pixelRect(in: model.recordingSize) == CGRect(x: 0, y: 0, width: 320, height: 400))
     }
 
     @Test func blurAreasAreDrawnSelectedAndDeleted() async throws {

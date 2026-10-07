@@ -111,6 +111,24 @@ struct SnapshotTests {
             model.close()
         }
 
+        // Choosing the crop, then the blurred areas over the cropped screen.
+        do {
+            let model = EditorModel(recording: blurred, files: files, library: library, preferences: Preferences.shared)
+            await model.load()
+            model.beginCropping()
+            model.setCropDraft(pixels: CGRect(x: 40, y: 30, width: 420, height: 300))
+            model.setCropAspect(.landscape)
+            try await Task.sleep(for: .milliseconds(300))
+            try await snapshot(EditorView(model: model), size: CGSize(width: 1320, height: 820), name: "editor-crop")
+            model.finishCropping()
+            model.selectRedaction(selected.id)
+            try await Task.sleep(for: .milliseconds(300))
+            try await snapshot(EditorView(model: model), size: CGSize(width: 1320, height: 820), name: "editor-cropped-blur")
+            model.inspectorTab = .layout
+            try await snapshot(EditorView(model: model), size: CGSize(width: 1320, height: 820), name: "editor-cropped-layout")
+            model.close()
+        }
+
         do {
             let folder = PipelineTests.scratchRoot.appendingPathComponent("silence-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

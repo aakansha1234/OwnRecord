@@ -404,8 +404,7 @@ private enum Report {
         let audio = recording.audioTracks.map { $0 == .system ? "system" : "microphone" }.joined(separator: ", ")
         let subtitles = details.subtitleCount.map { "\($0) (\(details.transcriptLocale ?? ""))" }
             ?? "none (ownrecord transcribe \(ControlFormat.shortID(recording.id)))"
-        let trim = details.trimStart == 0 && details.trimEnd == nil
-            ? "none" : ControlFormat.span(details.trimStart..<(details.trimEnd ?? recording.duration))
+        let crop = details.cropPixels.map { "\($0[2]) × \($0[3]) at \($0[0]),\($0[1])" } ?? "none"
         var lines = [
             recording.title,
             "  ID         \(recording.id.uuidString.lowercased())",
@@ -415,7 +414,7 @@ private enum Report {
             "  Camera     \(recording.hasCamera ? "yes" : "no")",
             "  Audio      \(audio.isEmpty ? "none" : audio)",
             "  Subtitles  \(subtitles)",
-            "  Trim       \(trim)",
+            "  Crop       \(crop)",
             "  Folder     \(recording.folder.map(path) ?? "")",
             "",
             "Sections (recording time → video time):",
@@ -427,7 +426,7 @@ private enum Report {
             if section.muted { notes.append("muted") }
             if section.subtitles != nil { notes.append("own subtitle style") }
             let played = section.deleted ? "cut"
-                : section.videoStart.map { "→ " + ControlFormat.span($0..<(section.videoEnd ?? $0)) } ?? "trimmed"
+                : section.videoStart.map { "→ " + ControlFormat.span($0..<(section.videoEnd ?? $0)) } ?? ""
             let span = ControlFormat.span(section.start..<section.end)
             lines.append("  \(section.number)  \(span.padding(toLength: max(16, span.count), withPad: " ", startingAt: 0))  \(played)"
                          + (notes.isEmpty ? "" : "  (\(notes.joined(separator: ", ")))"))
@@ -551,7 +550,7 @@ struct ToolCommand {
         \(rows(["list", "show", "open", "rename", "delete"]))
 
         Editing (when the recording is open in the editor, ⌘Z undoes these there)
-        \(rows(["trim", "cut", "restore", "silences", "blur", "unblur", "set", "transcribe", "transcript"]))
+        \(rows(["cut", "restore", "silences", "crop", "blur", "unblur", "set", "transcribe", "transcript"]))
 
         Output
         \(rows(["frame", "export"]))
@@ -774,27 +773,6 @@ struct ToolCommand {
 
         // Editing
         ToolCommand(
-            name: "trim", summary: "Set where the video starts and ends",
-            usage: "ownrecord trim <recording> [--start <time>] [--end <time>] [--reset]",
-            details: """
-            Trims the start and end off the video. The recording itself is kept, so this can be undone.
-
-              --start <time>   Where the video starts (recording time)
-              --end <time>     Where it ends
-              --reset          No trim (combine with --start or --end to replace the trim)
-            """,
-            values: ["start", "end"], flags: ["reset"]
-        ) { options, output in
-            try options.expectPositionals(atMost: 1)
-            guard options.string("start") != nil || options.string("end") != nil || options.flag("reset") else {
-                throw UsageError("Give --start, --end or --reset.")
-            }
-            let params = TrimParams(recording: try options.recording(), start: try options.time("start"),
-                                    end: try options.time("end"), reset: options.flag("reset"))
-            let result: EditResult = try ControlClient.send(.trim, params)
-            output.emit(result) { $0.message }
-        },
-        ToolCommand(
             name: "cut", summary: "Remove a stretch of the recording",
             usage: "ownrecord cut <recording> <from> <to>",
             details: """
@@ -857,6 +835,32 @@ struct ToolCommand {
                         + ["Add --delete to remove them, or --split to split around them."]).joined(separator: "\n")
                 }
             }
+        },
+        ToolCommand(
+            name: "crop", summary: "Show only part of the screen",
+            usage: "ownrecord crop <recording> (--rect <x,y,w,h> | --px <x,y,w,h> | --reset)",
+            details: """
+            Crops the screen recording for the whole video, e.g. to leave out the menu bar and Dock or
+            to focus on one window. The background, padding, camera and subtitles are laid out around
+            what's left, and with layout.aspect=original the video takes the crop's shape. The recording
+            itself is kept, so the crop can be changed or removed later.
+
+              --rect <x,y,w,h>   The part to keep, as fractions (0 to 1) of the screen recording, from its top-left corner
+              --px <x,y,w,h>     The same in pixels of the screen recording (see `frame --raw`)
+              --reset            Show the whole screen recording again
+
+            Example: ownrecord crop latest --px 0,50,1920,1030
+            """,
+            values: ["rect", "px"], flags: ["reset"]
+        ) { options, output in
+            try options.expectPositionals(atMost: 1)
+            let params = CropParams(recording: try options.recording(), rect: try options.rect("rect"), pixels: try options.rect("px"),
+                                    reset: options.flag("reset"))
+            guard [params.rect != nil, params.pixels != nil, params.reset == true].filter({ $0 }).count == 1 else {
+                throw UsageError("Give the part to keep with either --rect or --px, or --reset.")
+            }
+            let result: EditResult = try ControlClient.send(.crop, params)
+            output.emit(result) { $0.message }
         },
         ToolCommand(
             name: "blur", summary: "Blur or pixelate an area",
@@ -963,7 +967,7 @@ struct ToolCommand {
 
               --at <time>     Recording time; default: the start of the video
               --video         --at is a time in the edited video instead
-              --raw           The screen recording as captured, at full size (for --px coordinates)
+              --raw           The screen recording as captured (uncropped), at full size (for --px coordinates)
               --size <px>     Longest side, default 1920
               -o <file>       Where to save it (.png or .jpg); default: "<title> at <time>.png" here
               --force         Replace the file if it exists

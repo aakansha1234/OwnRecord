@@ -90,7 +90,11 @@ enum TranscriptionEngine {
         guard SFSpeechRecognizer.authorizationStatus() == .authorized else { throw TranscriptionError.notAuthorized }
         guard let recognizer = SFSpeechRecognizer(locale: locale) else { throw TranscriptionError.unsupportedLanguage }
         guard recognizer.isAvailable else { throw TranscriptionError.recognizerUnavailable }
-        recognizer.queue = OperationQueue()
+        // Delegate calls one at a time and in order: a task's last result arrives together with
+        // its "finished" call, and must be collected before it.
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        recognizer.queue = queue
 
         let samples = try await loadSamples(url: assetURL, trackIndices: audioTrackIndices)
         guard !samples.isEmpty else { throw TranscriptionError.noAudio }
@@ -251,6 +255,17 @@ enum TranscriptionEngine {
         }
     }
 
+    /// Adds a finalized result to a chunk's words. Depending on the OS version a long request
+    /// reports one cumulative result or one result per utterance, so a result replaces whatever
+    /// it covers from its first word on. Results without words (requests can end with an empty
+    /// one at the very start) change nothing.
+    static func merge(_ result: [TranscriptWord], into words: inout [TranscriptWord]) {
+        let spoken = result.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard let first = spoken.first else { return }
+        words.removeAll { $0.start >= first.start - 0.01 }
+        words.append(contentsOf: spoken)
+    }
+
     static func isNoSpeechError(_ error: Error) -> Bool {
         let nsError = error as NSError
         return nsError.domain == "kAFAssistantErrorDomain" && [203, 1110].contains(nsError.code)
@@ -258,9 +273,6 @@ enum TranscriptionEngine {
 }
 
 /// Collects every finalized utterance of a recognition task.
-///
-/// Depending on the OS version a long request may report one cumulative result or one
-/// result per utterance; merging by start time handles both.
 private final class RecognitionCollector: NSObject, SFSpeechRecognitionTaskDelegate, @unchecked Sendable {
     private let offset: Double
     private let lock = NSLock()
@@ -299,14 +311,11 @@ private final class RecognitionCollector: NSObject, SFSpeechRecognitionTaskDeleg
 
     func speechRecognitionTask(_ task: SFSpeechRecognitionTask, didFinishRecognition result: SFSpeechRecognitionResult) {
         let segments = result.bestTranscription.segments
-        guard let first = segments.first else { return }
-        let newStart = offset + first.timestamp
         let newWords = segments.map {
             TranscriptWord(text: $0.substring, start: offset + $0.timestamp, end: offset + $0.timestamp + $0.duration)
         }
         lock.lock()
-        words.removeAll { $0.start >= newStart - 0.01 }
-        words.append(contentsOf: newWords)
+        TranscriptionEngine.merge(newWords, into: &words)
         lock.unlock()
     }
 

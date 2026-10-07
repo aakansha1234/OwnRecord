@@ -188,8 +188,8 @@ struct MCPTool {
             name: "show_recording", title: "Show a recording",
             description: """
             A recording's details: its sections (recording time, where each plays in the edited video, and \
-            what's cut, hidden, muted, blurred or styled differently), the trim, and every layout, camera, \
-            subtitle and audio setting.
+            what's cut, hidden, muted, blurred or styled differently) and every layout, camera, subtitle and \
+            audio setting.
             """,
             properties: ["recording": recording],
             required: ["recording"], readOnly: true
@@ -220,20 +220,20 @@ struct MCPTool {
         MCPTool(
             name: "edit_recording", title: "Edit a recording",
             description: """
-            Edits a recording without touching its files: trim, cut and restore stretches, blur areas, \
-            change the look, and rename. Give any of them; they're applied in that order. With the \
+            Edits a recording without touching its files: cut and restore stretches, crop the screen, \
+            blur areas, change the look, and rename. Give any of them; they're applied in that order. With the \
             recording open in OwnRecord's editor, ⌘Z undoes them there. Times are seconds in the original \
             recording.
             """,
             properties: [
                 "recording": recording,
-                "trim": object([
-                    "start": number("Where the video starts."),
-                    "end": number("Where it ends."),
-                    "reset": boolean("Remove the trim (with start or end: replace it)."),
-                ], "Where the video starts and ends."),
                 "cut": ranges("Stretches to remove from the video, e.g. [[4.2, 6.8]]."),
                 "restore": ranges("Bring back cut parts that overlap these stretches."),
+                "crop": object([
+                    "rect": numbers(4, "[x, y, width, height] to keep, as fractions (0 to 1) of the screen recording, from its top-left corner."),
+                    "pixels": numbers(4, "The same in pixels of the screen recording (instead of rect)."),
+                    "reset": boolean("Show the whole screen recording again."),
+                ], "Show only part of the screen for the whole video, e.g. to leave out the menu bar and Dock. The background, camera and subtitles are laid out around it; with layout.aspect original, the video takes its shape."),
                 "blur": [
                     "type": "array",
                     "description": "Areas of the screen to blur or pixelate, e.g. a password; the camera and subtitles stay sharp.",
@@ -342,7 +342,7 @@ struct MCPTool {
                 "recording": recording,
                 "at": number("Recording time in seconds. Default: the start of the video."),
                 "video_time": boolean("at is a time in the edited video instead."),
-                "raw": boolean("The screen recording as captured, without the edit."),
+                "raw": boolean("The screen recording as captured, without the edit (uncropped; pixels for crop and blur)."),
                 "size": integer("Longest side in pixels. Default: 1280."),
             ],
             required: ["recording"], readOnly: true
@@ -401,18 +401,18 @@ struct MCPTool {
         let recording = try arguments.recording()
         // Check every argument before changing anything.
         var steps: [(command: ControlCommand, params: Encodable)] = []
-        if let trim = try arguments.object("trim", allowed: ["start", "end", "reset"]) {
-            let params = TrimParams(recording: recording, start: try trim.time("start"), end: try trim.time("end"),
-                                    reset: try trim.bool("reset"))
-            guard params.start != nil || params.end != nil || params.reset == true else {
-                throw ControlError("trim takes start, end or reset.")
-            }
-            steps.append((.trim, params))
-        }
         for (name, command) in [("restore", ControlCommand.restore), ("cut", .cut)] {
             for range in try arguments.ranges(name) {
                 steps.append((command, RangeParams(recording: recording, from: range.lowerBound, to: range.upperBound)))
             }
+        }
+        if let crop = try arguments.object("crop", allowed: ["rect", "pixels", "reset"]) {
+            let params = CropParams(recording: recording, rect: try crop.rect("rect"), pixels: try crop.rect("pixels"),
+                                    reset: try crop.bool("reset"))
+            guard [params.rect != nil, params.pixels != nil, params.reset == true].filter({ $0 }).count == 1 else {
+                throw ControlError("crop takes rect, pixels or reset.")
+            }
+            steps.append((.crop, params))
         }
         for area in try arguments.objects("blur", allowed: ["rect", "pixels", "pixelate", "from", "to"]) {
             let params = BlurParams(recording: recording, rect: try area.rect("rect"), pixels: try area.rect("pixels"),
@@ -439,7 +439,7 @@ struct MCPTool {
             steps.append((.rename, RenameParams(recording: recording, title: title)))
         }
         guard !steps.isEmpty else {
-            throw ControlError("Give at least one edit: trim, cut, restore, blur, unblur, settings or title.")
+            throw ControlError("Give at least one edit: cut, restore, crop, blur, unblur, settings or title.")
         }
 
         var messages: [String] = []

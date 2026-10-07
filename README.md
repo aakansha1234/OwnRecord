@@ -41,7 +41,7 @@ and the Speech framework. Requires macOS 15 or later.
   recording.
 
 **Editor & export**
-- Trim with a filmstrip timeline, frame stepping (← →), Space to play/pause.
+- Filmstrip timeline, frame stepping (← →), Space to play/pause.
 - **Split the recording into sections** (S) and edit each one: **delete** it (⌫, press again to
   restore), **hide the screen** (H; the camera then fills the frame), **hide the camera** (C),
   **move, resize or reshape the camera** for that section (drag it, or ⌥ + arrow keys between
@@ -54,8 +54,14 @@ and the Speech framework. Requires macOS 15 or later.
   timeline, and splits around them or removes them in one undoable step (adjustable threshold,
   shortest pause and the margin kept around speech).
 - Everything is keyboard-driven and in the **Timeline** and **Playback** menus: ↑ ↓ jump between
-  splits, I / O trim to the playhead, ⌘Z / ⇧⌘Z undo and redo every edit, ⌘/ shows all shortcuts.
+  splits, ⌘Z / ⇧⌘Z undo and redo every edit, ⌘/ shows all shortcuts.
   Right-click a section on the timeline for more (join, reset, camera position).
+- **Crop** the screen (⇧C) to leave out the menu bar, the Dock or other windows. The preview
+  shows the whole recording with handles to resize (⇧ keeps the shape, ⌥ resizes around the
+  center) and drag the crop; lock it to Original, 16:9, 9:16, 1:1 or 4:3 (e.g. to fill a vertical
+  video), or type its position and size in pixels. ⏎ applies it, Esc cancels, and it can be
+  widened again at any time. Background, camera and subtitles are laid out around the crop, and
+  exports are never upscaled from it.
 - Screen Studio-style framing: **backgrounds** (gradients), padding, rounded corners, shadow.
 - **Aspect ratios** for any platform: Auto, 16:9, 9:16 (Reels/TikTok/Shorts), 1:1, 4:3.
 - Per-track volume for microphone and system audio.
@@ -74,12 +80,12 @@ and the Speech framework. Requires macOS 15 or later.
 **Command line & AI agents**
 - The `ownrecord` command records, edits and exports from a terminal, scripts and AI agents such
   as Claude Code: `record` (screen, window or area, with `--duration` and `--wait`), `stop`,
-  `list`, `show`, `transcribe`, `transcript`, `cut`, `trim`, `silences`, `blur`, `set` (layout,
+  `list`, `show`, `transcribe`, `transcript`, `cut`, `silences`, `crop`, `blur`, `set` (layout,
   camera, subtitle and audio settings), `frame` (a still to check an edit) and `export` (MP4,
   MOV, GIF, iMovie clips). `--json` on any command gives machine-readable output; `ownrecord help`
   explains everything.
 - `ownrecord mcp` is an MCP server, so AI apps such as Claude Desktop, ChatGPT or Cursor can do
-  the same: 14 tools to record, list, inspect, transcribe, edit (cuts, trim, blur, layout, camera
+  the same: 14 tools to record, list, inspect, transcribe, edit (cuts, crop, blur, layout, camera
   and subtitle settings, also from a point in time) and export, plus `get_frame`, which returns a
   frame as an image the AI can look at. Long exports and transcriptions report progress, and
   deleting or discarding are separate tools so apps can ask first. It speaks MCP 2026-07-28 and
@@ -95,6 +101,7 @@ ownrecord record --window Simulator --countdown 0 --duration 20 --wait
 ownrecord transcript latest              # timed lines, to decide what to cut
 ownrecord cut latest 4.2 6.8             # times are in the original recording
 ownrecord silences latest --delete
+ownrecord crop latest --px 0,74,2880,1650      # pixels of the recording, see `frame --raw`
 ownrecord blur latest --rect 0.62,0.08,0.3,0.05 --from 12 --to 20
 ownrecord frame latest --at 10 -o check.png
 ownrecord export latest -o demo.mp4
@@ -160,7 +167,7 @@ Sources/OwnRecord
 ├── Transcription/  Speech-framework engine, cue builder, SRT/VTT export, silence detection
 ├── Export/         video, GIF and iMovie clip export
 ├── Library/        on-disk recording store, thumbnails
-├── Models/         Recording, EditSettings (layout/camera/subtitles/audio), timeline sections
+├── Models/         Recording, EditSettings (crop/layout/camera/subtitles/audio), timeline sections
 │                   and the source ↔ edited time map, Transcript
 ├── Support/        preferences, permissions, hot keys, panels, helpers
 └── UI/             Home (library), Recorder panel, Overlays (bubble, controls, countdown,

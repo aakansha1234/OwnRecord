@@ -9,7 +9,7 @@ struct TranscriptWord: Codable, Hashable {
 
 struct SubtitleCue: Codable, Hashable, Identifiable {
     var id = UUID()
-    /// Seconds from the start of the recording (not the trimmed timeline).
+    /// Seconds from the start of the recording (not the edited timeline).
     var start: Double
     var end: Double
     var text: String

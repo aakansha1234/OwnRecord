@@ -20,7 +20,7 @@ enum AspectPreset: String, Codable, CaseIterable, Identifiable {
 
     var detail: String {
         switch self {
-        case .original: "Matches the recording"
+        case .original: "Matches the recording (or its crop)"
         case .landscape: "YouTube, presentations"
         case .portrait: "Reels, TikTok, Shorts"
         case .square: "Social feeds"
@@ -206,9 +206,8 @@ struct AudioMixSettings: Codable, Hashable {
 
 /// Every non-destructive edit applied to a recording. Source files are never modified.
 struct EditSettings: Codable, Hashable {
-    var trimStart: Double = 0
-    /// nil means "until the end of the recording".
-    var trimEnd: Double?
+    /// The part of the screen recording the video shows; nil for all of it.
+    var crop: CropRect?
     /// Sorted by start; the first starts at 0. Never empty.
     var sections = [TimelineSection(start: 0)]
     var layout = LayoutStyle()
@@ -220,8 +219,7 @@ struct EditSettings: Codable, Hashable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        trimStart = try container.decodeIfPresent(Double.self, forKey: .trimStart) ?? 0
-        trimEnd = try container.decodeIfPresent(Double.self, forKey: .trimEnd)
+        crop = try container.decodeIfPresent(CropRect.self, forKey: .crop)
         layout = try container.decodeIfPresent(LayoutStyle.self, forKey: .layout) ?? LayoutStyle()
         camera = try container.decodeIfPresent(CameraOverlayStyle.self, forKey: .camera) ?? CameraOverlayStyle()
         subtitles = try container.decodeIfPresent(SubtitleStyle.self, forKey: .subtitles) ?? SubtitleStyle()

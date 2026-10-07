@@ -5,8 +5,11 @@ import CoreImage.CIFilterBuiltins
 enum RenderLayer: Sendable {
     /// Screen, camera, background and subtitles, as in the preview.
     case composed
-    /// Only the screen (blurs and subtitles included), filling the frame. Black where it's hidden.
+    /// Only the screen (cropped, blurs and subtitles included), filling the frame. Black where it's hidden.
     case screen
+    /// The whole screen recording, uncropped and with its blurs, filling the frame: what the crop is
+    /// chosen from.
+    case fullScreen
     /// Only the camera, filling the frame. Black where it's hidden.
     case camera
 }
@@ -41,7 +44,8 @@ enum FrameRenderer {
         case .screen:
             var output = CIImage(color: .black).cropped(to: bounds)
             if let screen, layout.screenOpacity > 0.001 {
-                let content = place(redacted(screen, redactions), in: bounds, highQuality: state.highQuality)
+                let content = place(cropped(redacted(screen, redactions), to: state.edit.crop), in: bounds,
+                                    highQuality: state.highQuality)
                 output = faded(content, layout.screenOpacity).composited(over: output)
             }
             return subtitled(output, at: sourceTime, layout: layout, state: state).cropped(to: bounds)
@@ -53,13 +57,18 @@ enum FrameRenderer {
                 output = faded(place(feed, in: bounds, highQuality: state.highQuality), frame.opacity).composited(over: output)
             }
             return output.cropped(to: bounds)
+        case .fullScreen:
+            let output = CIImage(color: .black).cropped(to: bounds)
+            guard let screen else { return output }
+            return place(redacted(screen, redactions), in: bounds, highQuality: state.highQuality).composited(over: output)
         }
 
         var output = background(state.edit.layout.background, canvas: canvas)
 
         if let screen, layout.screenOpacity > 0.001 {
             let target = flipped(layout.screenRect, canvasHeight: canvas.height)
-            var content = place(redacted(screen, redactions), in: target, highQuality: state.highQuality)
+            var content = place(cropped(redacted(screen, redactions), to: state.edit.crop), in: target,
+                                highQuality: state.highQuality)
             if layout.screenCornerRadius > 0.5 {
                 content = masked(content, rect: target, radius: layout.screenCornerRadius)
             }
@@ -140,6 +149,14 @@ enum FrameRenderer {
             output = hidden.cropped(to: rect).composited(over: output)
         }
         return output
+    }
+
+    /// The part of a screen frame that `crop` keeps.
+    static func cropped(_ image: CIImage, to crop: CropRect?) -> CIImage {
+        let extent = image.extent
+        guard let crop, extent.width > 0, extent.height > 0, extent.width.isFinite, extent.height.isFinite else { return image }
+        let rect = flipped(crop.pixelRect(in: extent.size), canvasHeight: extent.height)
+        return image.cropped(to: rect.offsetBy(dx: extent.minX, dy: extent.minY))
     }
 
     // MARK: Helpers

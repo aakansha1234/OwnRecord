@@ -135,9 +135,9 @@ extension Recording {
 }
 
 extension EditSettings {
-    /// The parts of `pauses` that are in the video (not trimmed or deleted) and long enough to cut.
+    /// The parts of `pauses` that are in the video (not deleted) and long enough to cut.
     func pausesInVideo(_ pauses: [Range<Double>], duration: Double) -> [Range<Double>] {
-        let kept = keptRanges(duration: duration, applyingTrim: true)
+        let kept = keptRanges(duration: duration)
         var result: [Range<Double>] = []
         for pause in pauses {
             for range in kept {
@@ -153,10 +153,8 @@ extension EditSettings {
     /// video anyway, and with `deleting` removes them. Returns the pauses that were cut.
     @discardableResult
     mutating func cutPauses(_ pauses: [Range<Double>], deleting: Bool, duration: Double) -> [Range<Double>] {
-        let kept = keptRanges(duration: duration, applyingTrim: true)
+        let kept = keptRanges(duration: duration)
         let cut = pausesInVideo(pauses, duration: duration)
-        // Splitting at trim edges too keeps material outside the trim out of deleted pauses, so
-        // it's still there when the trim is reset.
         for pause in cut {
             split(at: pause.lowerBound, duration: duration)
             split(at: pause.upperBound, duration: duration)

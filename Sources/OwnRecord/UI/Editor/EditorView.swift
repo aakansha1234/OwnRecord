@@ -62,7 +62,7 @@ private struct EditorHeader: View {
             .help("Show recording files in Finder")
             .accessibilityLabel("Show in Finder")
             Button {
-                model.isExportSheetPresented = true
+                model.showExportSheet()
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
                     .font(.system(size: 13, weight: .semibold))
@@ -100,7 +100,7 @@ private struct PreviewStage: View {
     var body: some View {
         GeometryReader { geometry in
             let canvas = model.canvasSize
-            let stage = CGRect.aspectFit(canvas, in: CGRect(origin: .zero, size: geometry.size).insetBy(dx: 28, dy: 24))
+            let stage = CGRect.aspectFit(canvas, in: stageArea(in: geometry.size))
             ZStack(alignment: .topLeading) {
                 PlayerLayerView(player: model.player)
                     .frame(width: stage.width, height: stage.height)
@@ -113,7 +113,11 @@ private struct PreviewStage: View {
                     }
 
                 let section = model.currentSection
-                if model.loadState == .ready, section.isDeleted, !model.isPlaying {
+                if let crop = model.cropDraft {
+                    CropOverlay(model: model, crop: crop, screen: stage)
+                    CropBar(model: model)
+                        .position(x: stage.midX, y: stage.maxY + 32)
+                } else if model.loadState == .ready, section.isDeleted, !model.isPlaying {
                     DeletedSectionOverlay(model: model)
                         .frame(width: stage.width, height: stage.height)
                         .position(x: stage.midX, y: stage.midY)
@@ -121,8 +125,9 @@ private struct PreviewStage: View {
                           model.drawingRedaction == nil {
                     CameraDragHandle(model: model, stage: stage)
                 }
-                if model.loadState == .ready, model.canRedact, !model.isPlaying {
-                    RedactionLayer(model: model, screen: screenFrame(in: stage))
+                if model.loadState == .ready, model.canRedact, !model.isPlaying, !model.isCropping {
+                    let frames = screenFrames(in: stage)
+                    RedactionLayer(model: model, screen: frames.full, visible: frames.visible)
                 }
 
                 if let hint = model.hint {
@@ -153,14 +158,29 @@ private struct PreviewStage: View {
         .frame(minHeight: 300)
     }
 
-    /// Where the screen recording appears in the preview.
-    private func screenFrame(in stage: CGRect) -> CGRect {
+    /// Where the video can go in the preview. While cropping, the crop bar goes below it, clear of
+    /// the bottom handles.
+    private func stageArea(in size: CGSize) -> CGRect {
+        var area = CGRect(origin: .zero, size: size).insetBy(dx: 28, dy: 24)
+        if model.isCropping { area.size.height -= 52 }
+        return area
+    }
+
+    /// Where the screen recording appears in the preview: the part the crop keeps (`visible`), and
+    /// where the whole recording would be (`full`), which blurred areas are placed in.
+    private func screenFrames(in stage: CGRect) -> (visible: CGRect, full: CGRect) {
         let canvas = model.canvasSize
         let scale = stage.width / max(canvas.width, 1)
-        let rect = LayoutEngine.layout(canvas: canvas, source: model.sourceSize, edit: model.recording.edit,
-                                       hasCamera: false).screenRect
-        return CGRect(x: stage.minX + rect.minX * scale, y: stage.minY + rect.minY * scale,
-                      width: rect.width * scale, height: rect.height * scale)
+        let edit = model.recording.edit
+        let rect = LayoutEngine.layout(canvas: canvas, source: model.sourceSize, edit: edit, hasCamera: false).screenRect
+        let visible = CGRect(x: stage.minX + rect.minX * scale, y: stage.minY + rect.minY * scale,
+                             width: rect.width * scale, height: rect.height * scale)
+        let source = model.sourceSize
+        let crop = edit.screenCrop(in: source)
+        guard crop.width > 0, crop.height > 0 else { return (visible, visible) }
+        let scaleX = visible.width / crop.width, scaleY = visible.height / crop.height
+        return (visible, CGRect(x: visible.minX - crop.minX * scaleX, y: visible.minY - crop.minY * scaleY,
+                                width: source.width * scaleX, height: source.height * scaleY))
     }
 }
 
@@ -170,17 +190,30 @@ private struct PreviewStage: View {
 /// for dragging out a new one. Coordinates are in the "preview" space.
 private struct RedactionLayer: View {
     @Bindable var model: EditorModel
+    /// Where the whole screen recording would be (areas are relative to it).
     let screen: CGRect
+    /// The part of it the crop keeps.
+    let visible: CGRect
 
     var body: some View {
+        // Areas outside the crop aren't in the video; uncropped, the handles may overhang the edges.
+        let clip = visible == screen ? screen.insetBy(dx: -12, dy: -12) : visible
         ZStack(alignment: .topLeading) {
             ForEach(Array(model.currentRedactions.enumerated()), id: \.element.id) { index, redaction in
+                let frame = CGRect(x: screen.minX + redaction.x * screen.width, y: screen.minY + redaction.y * screen.height,
+                                   width: redaction.width * screen.width, height: redaction.height * screen.height)
                 RedactionBox(model: model, redaction: redaction, number: index + 1, screen: screen,
                              isSelected: model.selectedRedaction?.id == redaction.id)
-                    .allowsHitTesting(model.drawingRedaction == nil)
+                    // An area that's cropped away is out of sight, so it mustn't catch clicks either.
+                    .allowsHitTesting(model.drawingRedaction == nil && frame.intersects(visible))
+            }
+            .mask(alignment: .topLeading) {
+                Rectangle()
+                    .frame(width: clip.width, height: clip.height)
+                    .offset(x: clip.minX, y: clip.minY)
             }
             if let style = model.drawingRedaction {
-                RedactionDrawingSurface(model: model, style: style, screen: screen)
+                RedactionDrawingSurface(model: model, style: style, screen: screen, visible: visible)
             }
         }
     }
@@ -315,7 +348,10 @@ private struct RedactionBox: View {
 private struct RedactionDrawingSurface: View {
     @Bindable var model: EditorModel
     let style: RedactionStyle
+    /// Where the whole screen recording would be (areas are relative to it).
     let screen: CGRect
+    /// The part of it the crop keeps, where areas are drawn.
+    let visible: CGRect
     @State private var start: CGPoint?
     @State private var current: CGPoint?
 
@@ -323,8 +359,8 @@ private struct RedactionDrawingSurface: View {
         ZStack(alignment: .topLeading) {
             Rectangle()
                 .fill(Color.black.opacity(0.25))
-                .frame(width: screen.width, height: screen.height)
-                .position(x: screen.midX, y: screen.midY)
+                .frame(width: visible.width, height: visible.height)
+                .position(x: visible.midX, y: visible.midY)
                 .pointerStyle(.rectSelection)
                 .gesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .named("preview"))
@@ -354,7 +390,7 @@ private struct RedactionDrawingSurface: View {
     }
 
     private func clamped(_ point: CGPoint) -> CGPoint {
-        CGPoint(x: point.x.clamped(to: screen.minX...screen.maxX), y: point.y.clamped(to: screen.minY...screen.maxY))
+        CGPoint(x: point.x.clamped(to: visible.minX...visible.maxX), y: point.y.clamped(to: visible.minY...visible.maxY))
     }
 
     private func finish(from start: CGPoint, to end: CGPoint) {
@@ -418,6 +454,201 @@ private struct CameraDragHandle: View {
             .help(model.hasMultipleSections
                   ? "Drag to move the camera in this section. Release near a corner to snap."
                   : "Drag to move the camera. Release near a corner to snap.")
+    }
+}
+
+// MARK: - Crop
+
+/// Choosing the crop: the whole recording, dimmed outside the crop, with handles on its corners and
+/// edges and the inside to move it. ⇧ keeps the shape, ⌥ resizes around the center. Coordinates are
+/// in the "preview" space.
+private struct CropOverlay: View {
+    @Bindable var model: EditorModel
+    let crop: CropRect
+    /// Where the whole recording is in the preview.
+    let screen: CGRect
+    /// The crop when the current drag began, in pixels of the recording.
+    @State private var dragStart: CGRect?
+
+    var body: some View {
+        let frame = CGRect(x: screen.minX + crop.x * screen.width, y: screen.minY + crop.y * screen.height,
+                           width: crop.width * screen.width, height: crop.height * screen.height)
+        ZStack(alignment: .topLeading) {
+            Path { path in
+                path.addRect(screen)
+                path.addRect(frame)
+            }
+            .fill(Color.black.opacity(0.6), style: FillStyle(eoFill: true))
+            .allowsHitTesting(false)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.001))
+                .overlay {
+                    // Thirds while adjusting, as in photo editors.
+                    if dragStart != nil {
+                        ThirdsGrid().stroke(Color.white.opacity(0.5), lineWidth: 0.75)
+                    }
+                }
+                .overlay(Rectangle().strokeBorder(Color.white, lineWidth: 1))
+                .shadow(color: .black.opacity(0.4), radius: 1)
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .pointerStyle(.grabIdle)
+                .gesture(
+                    DragGesture(minimumDistance: 1, coordinateSpace: .named("preview"))
+                        .onChanged { value in
+                            let start = beginDrag()
+                            let scale = pixelsPerPoint
+                            model.setCropDraft(pixels: start.offsetBy(dx: value.translation.width * scale.width,
+                                                                      dy: value.translation.height * scale.height))
+                        }
+                        .onEnded { _ in dragStart = nil }
+                )
+                .onTapGesture(count: 2) { model.finishCropping() }
+                .help("Drag to move the crop, or its handles to resize it. Double-click or press Return when done.")
+                .accessibilityLabel("Crop")
+
+            ForEach(CropHandle.allCases, id: \.self) { handle in
+                handleView(handle, frame: frame)
+            }
+        }
+    }
+
+    private func handleView(_ handle: CropHandle, frame: CGRect) -> some View {
+        let corner = CGPoint(x: handle.horizontal < 0 ? frame.minX : handle.horizontal > 0 ? frame.maxX : frame.midX,
+                             y: handle.vertical < 0 ? frame.minY : handle.vertical > 0 ? frame.maxY : frame.midY)
+        // Corner brackets reach into the crop; edge bars sit on the edge.
+        let size = handle.isCorner ? CGSize(width: 20, height: 20)
+            : handle.horizontal == 0 ? CGSize(width: 26, height: 4) : CGSize(width: 4, height: 26)
+        let center = handle.isCorner ? CGPoint(x: corner.x - handle.horizontal * 8, y: corner.y - handle.vertical * 8) : corner
+        return CropHandleMark(handle: handle)
+            .stroke(Color.white, lineWidth: 4)
+            .shadow(color: .black.opacity(0.5), radius: 1.5)
+            .frame(width: size.width, height: size.height)
+            .contentShape(Rectangle().inset(by: -7))
+            .position(center)
+            .pointerStyle(.frameResize(position: handle.pointer))
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .named("preview"))
+                    .onChanged { value in
+                        let start = beginDrag()
+                        let modifiers = NSEvent.modifierFlags
+                        let scale = pixelsPerPoint
+                        var ratio = model.cropAspect.ratio(source: model.recordingSize)
+                        if ratio == nil, modifiers.contains(.shift) { ratio = start.width / max(start.height, 1) }
+                        let translation = CGSize(width: value.translation.width * scale.width,
+                                                 height: value.translation.height * scale.height)
+                        model.setCropDraft(pixels: CropRect.resizing(start, handle: handle, by: translation,
+                                                                     in: model.recordingSize, ratio: ratio,
+                                                                     fromCenter: modifiers.contains(.option)))
+                    }
+                    .onEnded { _ in dragStart = nil }
+            )
+            .accessibilityHidden(true)
+    }
+
+    private var pixelsPerPoint: CGSize {
+        let size = model.recordingSize
+        return CGSize(width: size.width / max(screen.width, 1), height: size.height / max(screen.height, 1))
+    }
+
+    private func beginDrag() -> CGRect {
+        if let dragStart { return dragStart }
+        let size = model.recordingSize
+        let start = CGRect(x: crop.x * size.width, y: crop.y * size.height,
+                           width: crop.width * size.width, height: crop.height * size.height)
+        dragStart = start
+        return start
+    }
+}
+
+/// A crop handle's mark: an L-shaped bracket for a corner (drawn for the top left, then mirrored),
+/// a short bar for an edge.
+private struct CropHandleMark: Shape {
+    let handle: CropHandle
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        guard handle.isCorner else {
+            path.move(to: CGPoint(x: handle.horizontal == 0 ? rect.minX : rect.midX, y: handle.horizontal == 0 ? rect.midY : rect.minY))
+            path.addLine(to: CGPoint(x: handle.horizontal == 0 ? rect.maxX : rect.midX, y: handle.horizontal == 0 ? rect.midY : rect.maxY))
+            return path
+        }
+        // Half the line width in, so the bracket is centered on the crop's edges.
+        let inset: CGFloat = 2
+        let flipX = handle.horizontal > 0, flipY = handle.vertical > 0
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: flipX ? rect.maxX - x : rect.minX + x, y: flipY ? rect.maxY - y : rect.minY + y)
+        }
+        path.move(to: point(inset, rect.height))
+        path.addLine(to: point(inset, inset))
+        path.addLine(to: point(rect.width, inset))
+        return path
+    }
+}
+
+private extension CropHandle {
+    var pointer: FrameResizePosition {
+        switch self {
+        case .topLeft: .topLeading
+        case .top: .top
+        case .topRight: .topTrailing
+        case .right: .trailing
+        case .bottomRight: .bottomTrailing
+        case .bottom: .bottom
+        case .bottomLeft: .bottomLeading
+        case .left: .leading
+        }
+    }
+}
+
+private struct ThirdsGrid: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for third in [CGFloat(1) / 3, CGFloat(2) / 3] {
+            path.move(to: CGPoint(x: rect.minX + rect.width * third, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.minX + rect.width * third, y: rect.maxY))
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY + rect.height * third))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + rect.height * third))
+        }
+        return path
+    }
+}
+
+/// The crop's shape and size, and the buttons to finish choosing it.
+private struct CropBar: View {
+    @Bindable var model: EditorModel
+
+    var body: some View {
+        let pixels = model.cropDraftPixels ?? .zero
+        HStack(spacing: 10) {
+            Picker("Shape", selection: Binding(get: { model.cropAspect }, set: { model.setCropAspect($0) })) {
+                ForEach(CropAspect.allCases) { aspect in
+                    Text(aspect == model.cropAspectFillingVideo ? "\(aspect.title) · fills the video" : aspect.title)
+                        .tag(aspect)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .fixedSize()
+            .help("Keep the crop to a shape. Hold ⇧ while dragging a handle to keep its current shape.")
+            Text("\(Int(pixels.width)) × \(Int(pixels.height))")
+                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize()
+                .help("Size of the crop in pixels of the recording")
+            Divider().frame(height: 16)
+            Button("Reset") { model.resetCropDraft() }
+                .disabled(model.cropDraft?.isFull ?? true)
+                .help("Show the whole recording")
+            Button("Cancel") { model.cancelCropping() }
+                .help("Leave the crop as it was (Esc)")
+            Button("Done") { model.finishCropping() }
+                .buttonStyle(.borderedProminent)
+                .help("Apply the crop (Return)")
+        }
+        .controlSize(.small)
+        .statusCapsule()
     }
 }
 
@@ -491,17 +722,12 @@ private struct TransportBar: View {
 
             Spacer(minLength: 8)
 
-            if model.isTrimmed {
-                Button("Reset Trim") { model.resetTrim() }
-                    .controlSize(.small)
-                    .help("Trimmed \(TimeFormat.precise(model.trimStart)) – \(TimeFormat.precise(model.trimEnd))")
-            }
             if model.hasMultipleSections {
                 Text("Section \(model.currentSectionIndex + 1) of \(model.sections.count)")
                     .font(.system(size: 11, weight: .medium).monospacedDigit())
                     .foregroundStyle(.secondary)
                     .fixedSize()
-            } else if !model.isTrimmed {
+            } else {
                 Text("Press S to split")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
@@ -536,6 +762,7 @@ private struct SectionToolbar: View {
                            symbol: section.mutesAudio ? "speaker.slash" : "speaker.wave.2", isOff: section.mutesAudio)
             }
             Divider().frame(height: 18).padding(.horizontal, 5)
+            ToolButton(model: model, command: .crop, symbol: "crop", isActive: model.isCropping)
             ToolButton(model: model, command: .showShortcuts, symbol: "keyboard")
                 .popover(isPresented: $model.isShortcutsPresented, arrowEdge: .bottom) {
                     ShortcutsView()
@@ -550,20 +777,23 @@ private struct ToolButton: View {
     let command: EditorCommand
     let symbol: String
     var isOff = false
+    /// The mode the button starts is on, e.g. choosing the crop.
+    var isActive = false
     @State private var hovering = false
 
     var body: some View {
         let title = command.title(for: model)
+        let tint = isOff ? Color.orange : isActive ? Color.accentColor : nil
         Button {
             command.perform(on: model)
         } label: {
             Image(systemName: symbol)
                 .font(.system(size: 13, weight: .medium))
                 .frame(width: 30, height: 26)
-                .foregroundStyle(isOff ? Color.orange : Color.primary)
+                .foregroundStyle(tint ?? Color.primary)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isOff ? Color.orange.opacity(0.16) : Color.primary.opacity(hovering ? 0.08 : 0))
+                        .fill(tint?.opacity(0.16) ?? Color.primary.opacity(hovering ? 0.08 : 0))
                 )
                 .contentShape(Rectangle())
         }
@@ -592,10 +822,10 @@ struct ShortcutsView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     group(.sections)
                     group(.camera)
+                    group(.crop)
                 }
                 VStack(alignment: .leading, spacing: 14) {
                     group(.playback)
-                    group(.trim)
                     VStack(alignment: .leading, spacing: 5) {
                         header("General")
                         ForEach(extras, id: \.title) { row($0.title, $0.shortcut) }

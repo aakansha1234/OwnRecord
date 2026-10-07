@@ -47,17 +47,16 @@ import Testing
 
     @Test func cutsOnlyWhatIsInTheVideo() {
         var edit = EditSettings()
-        edit.trimStart = 0.5
+        edit.split(at: 0.5, duration: 10)
         edit.split(at: 6, duration: 10)
-        edit.sections[1].isDeleted = true
+        edit.sections[0].isDeleted = true
+        edit.sections[2].isDeleted = true
         let cut = edit.cutPauses([0..<1.5, 3..<4, 5.5..<7], deleting: true, duration: 10)
-        // Clipped to the trim and to the deleted section after 6 s.
+        // Clipped to the deleted sections before 0.5 s and after 6 s.
         #expect(approx(cut, [0.5..<1.5, 3..<4, 5.5..<6]), "\(cut)")
         #expect(edit.sections.map(\.start) == [0, 0.5, 1.5, 3, 4, 5.5, 6])
-        #expect(edit.sections.map(\.isDeleted) == [false, true, false, true, false, true, true])
-        #expect(edit.keptRanges(duration: 10, applyingTrim: true) == [1.5..<3, 4..<5.5])
-        // What was trimmed away isn't deleted, so it comes back with the trim.
-        #expect(edit.keptRanges(duration: 10, applyingTrim: false).first == 0..<0.5)
+        #expect(edit.sections.map(\.isDeleted) == [true, true, false, true, false, true, true])
+        #expect(edit.keptRanges(duration: 10) == [1.5..<3, 4..<5.5])
     }
 
     @Test func pausesNextToExistingSplitsStillGetDeleted() {

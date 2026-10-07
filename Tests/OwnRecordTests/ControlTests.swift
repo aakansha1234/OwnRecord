@@ -86,9 +86,9 @@ import Testing
     @Test func restoresCutSections() {
         var edit = EditSettings()
         edit.cutPauses([2..<4, 6..<8], deleting: true, duration: 10)
-        #expect(edit.keptRanges(duration: 10, applyingTrim: true) == [0..<2, 4..<6, 8..<10])
+        #expect(edit.keptRanges(duration: 10) == [0..<2, 4..<6, 8..<10])
         #expect(edit.restoreSections(overlapping: 3..<3.5, duration: 10) == 1)
-        #expect(edit.keptRanges(duration: 10, applyingTrim: true) == [0..<6, 8..<10])
+        #expect(edit.keptRanges(duration: 10) == [0..<6, 8..<10])
         #expect(edit.restoreSections(overlapping: 0..<1, duration: 10) == 0)
     }
 

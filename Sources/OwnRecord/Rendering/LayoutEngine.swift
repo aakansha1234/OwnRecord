@@ -55,19 +55,24 @@ enum LayoutEngine {
         return size.evenRounded()
     }
 
+    /// Canvas size for an edit: its aspect preset around the part of the screen the crop keeps.
+    static func canvasSize(source: CGSize, edit: EditSettings) -> CGSize {
+        canvasSize(source: edit.screenCrop(in: source).size, aspect: edit.layout.aspect)
+    }
+
     /// How long layout changes between sections animate.
     static let transitionDuration = 0.4
 
     /// - Parameters:
     ///   - time: Recording time, which picks the section (and any transition into it).
     ///   - timeline: The video being rendered, to animate only from what actually plays before a
-    ///     section (not from trimmed-away parts). Without it, the previous kept section is used.
+    ///     section (not from deleted ones). Without it, the previous kept section is used.
     static func layout(canvas: CGSize, source: CGSize, edit: EditSettings, hasCamera: Bool, at time: Double = 0,
                        timeline: TimelineMap? = nil) -> CanvasLayout {
         let minSide = min(canvas.width, canvas.height)
         let padding = CGFloat(edit.layout.padding) * minSide
         let stage = CGRect(origin: .zero, size: canvas).insetBy(dx: padding, dy: padding)
-        let screenRect = CGRect.aspectFit(source, in: stage)
+        let screenRect = CGRect.aspectFit(edit.screenCrop(in: source).size, in: stage)
         let screenRadius = CGFloat(edit.layout.cornerRadius) * min(screenRect.width, screenRect.height)
 
         let index = edit.sectionIndex(at: time)

@@ -155,14 +155,14 @@ private func seconds(_ value: Double) -> CMTime { CMTime(seconds: value, preferr
         #expect(vtt.hasPrefix("WEBVTT\n\n00:00:01.500 --> 00:00:03.250\nHello"))
     }
 
-    @Test func trimShiftsAndClipsCues() {
+    @Test func cuesShiftAndClipToTheVideo() {
         let cues = [SubtitleCue(start: 0, end: 2, text: "a"), SubtitleCue(start: 4, end: 6, text: "b"),
                     SubtitleCue(start: 9, end: 12, text: "c")]
-        let trimmed = SubtitleExporter.cues(cues, timeline: TimelineMap(ranges: [1..<10]))
-        #expect(trimmed.map(\.text) == ["a", "b", "c"])
-        #expect(trimmed[0].start == 0 && trimmed[0].end == 1)
-        #expect(trimmed[1].start == 3)
-        #expect(trimmed[2].end == 9)
+        let shifted = SubtitleExporter.cues(cues, timeline: TimelineMap(ranges: [1..<10]))
+        #expect(shifted.map(\.text) == ["a", "b", "c"])
+        #expect(shifted[0].start == 0 && shifted[0].end == 1)
+        #expect(shifted[1].start == 3)
+        #expect(shifted[2].end == 9)
         #expect(SubtitleExporter.cues(cues, timeline: TimelineMap(ranges: [6.5..<8])).isEmpty)
     }
 
@@ -250,6 +250,23 @@ private func seconds(_ value: Double) -> CMTime { CMTime(seconds: value, preferr
         let firstCut = Double(ranges[0].upperBound) / TranscriptionEngine.sampleRate
         #expect(firstCut > 27 && firstCut < 27.5)
         #expect(ranges.allSatisfy { Double($0.count) / TranscriptionEngine.sampleRate <= 40.01 })
+    }
+
+    @Test func resultsAddUpWithoutLosingWords() {
+        func word(_ text: String, _ start: Double) -> TranscriptWord { TranscriptWord(text: text, start: start, end: start + 0.5) }
+        var words: [TranscriptWord] = []
+        // One result per utterance.
+        TranscriptionEngine.merge([word("Hello", 30), word("there", 30.5)], into: &words)
+        TranscriptionEngine.merge([word("and", 34), word("welcome", 34.5)], into: &words)
+        #expect(words.map(\.text) == ["Hello", "there", "and", "welcome"])
+        // A cumulative result replaces what it repeats.
+        TranscriptionEngine.merge([word("Hello", 30), word("there,", 30.5), word("and", 34), word("welcome", 34.5),
+                                   word("back", 35)], into: &words)
+        #expect(words.map(\.text) == ["Hello", "there,", "and", "welcome", "back"])
+        // An empty result at the start of the chunk (as some requests end with) keeps everything.
+        TranscriptionEngine.merge([TranscriptWord(text: "", start: 30, end: 30)], into: &words)
+        TranscriptionEngine.merge([], into: &words)
+        #expect(words.count == 5)
     }
 }
 

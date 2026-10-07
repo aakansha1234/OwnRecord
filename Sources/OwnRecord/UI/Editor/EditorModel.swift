@@ -60,7 +60,10 @@ final class EditorModel {
     private(set) var thumbnails: [NSImage] = []
     var transcription: TranscriptionState = .idle
     var export: ExportState = .idle
-    var inspectorTab: InspectorTab = .layout
+    var inspectorTab: InspectorTab = .layout {
+        // The crop is chosen in the Layout tab; going elsewhere applies it.
+        didSet { if inspectorTab != .layout { finishCropping() } }
+    }
     var isExportSheetPresented = false
     var isShortcutsPresented = false
     var isSilenceSheetPresented = false
@@ -74,6 +77,10 @@ final class EditorModel {
     private(set) var selectedRedactionID: Redaction.ID?
     /// Set while dragging out a new blurred area in the preview.
     private(set) var drawingRedaction: RedactionStyle?
+    /// Set while choosing the crop: the crop being chosen, applied by `finishCropping`.
+    private(set) var cropDraft: CropRect?
+    /// The shape the crop is locked to while choosing it.
+    private(set) var cropAspect: CropAspect = .free
 
     struct Hint: Equatable, Identifiable {
         let id = UUID()
@@ -116,14 +123,14 @@ final class EditorModel {
 
     // MARK: Derived values
 
-    var canvasSize: CGSize {
-        LayoutEngine.canvasSize(source: sourceSize == .zero ? recording.pixelSize : sourceSize,
-                                aspect: recording.edit.layout.aspect)
-    }
+    /// Pixel size of the screen recording.
+    var recordingSize: CGSize { sourceSize == .zero ? recording.pixelSize : sourceSize }
 
-    var trimStart: Double { recording.edit.trimStart }
-    var trimEnd: Double { recording.edit.trimEnd ?? duration }
-    var isTrimmed: Bool { trimStart > 0.01 || recording.edit.trimEnd != nil }
+    var canvasSize: CGSize {
+        // While choosing the crop, the preview shows the whole recording.
+        if isCropping { return recordingSize.evenRounded() }
+        return LayoutEngine.canvasSize(source: recordingSize, edit: recording.edit)
+    }
 
     var sections: [TimelineSection] { recording.edit.sections }
     var hasMultipleSections: Bool { sections.count > 1 }
@@ -136,16 +143,16 @@ final class EditorModel {
         recording.edit.range(ofSectionAt: index, duration: duration)
     }
 
-    /// Length of the edited video (trimmed, deleted sections removed).
-    var editedDuration: Double {
-        max(0, previewTimeline.outputTime(forSource: trimEnd) - previewTimeline.outputTime(forSource: trimStart))
-    }
+    /// Length of the edited video (deleted sections removed).
+    var editedDuration: Double { previewTimeline.duration }
 
     /// Playhead position in the edited video.
     var editedTime: Double {
-        let position = previewTimeline.outputTime(forSource: currentTime) - previewTimeline.outputTime(forSource: trimStart)
-        return position.clamped(to: 0...max(0, editedDuration))
+        previewTimeline.outputTime(forSource: currentTime).clamped(to: 0...max(0, editedDuration))
     }
+
+    /// Recording time where the edited video starts.
+    private var videoStart: Double { previewTimeline.sourceTime(forOutput: 0) }
 
     var canSplit: Bool {
         let time = snappedToFrame(currentTime)
@@ -154,7 +161,7 @@ final class EditorModel {
             && range.upperBound - time >= EditSettings.minimumSectionLength
     }
 
-    /// Whether a subtitle falls entirely within deleted or trimmed parts.
+    /// Whether a subtitle falls entirely within deleted sections.
     func isCut(_ cue: SubtitleCue) -> Bool {
         recording.editedTimeline.outputRanges(forSource: cue.start..<max(cue.start, cue.end)).isEmpty
     }
@@ -174,10 +181,10 @@ final class EditorModel {
 
     func load() async {
         do {
-            let ranges = recording.edit.keptRanges(duration: .infinity, applyingTrim: false)
+            let ranges = recording.edit.keptRanges(duration: .infinity)
             let result = try await CompositionBuilder.build(recording: recording, files: files, ranges: ranges)
             duration = result.sourceDuration
-            await install(result, at: trimStart)
+            await install(result, at: result.timeline.sourceTime(forOutput: 0))
             observePlayer()
             loadState = .ready
             await loadThumbnails()
@@ -198,7 +205,6 @@ final class EditorModel {
         let item = AVPlayerItem(asset: result.composition)
         item.videoComposition = makePreviewComposition()
         item.audioMix = CompositionBuilder.audioMix(for: result, edit: recording.edit)
-        applyPlaybackRange(to: item)
         player.replaceCurrentItem(with: item)
         playerItem = item
         currentTime = time
@@ -212,7 +218,7 @@ final class EditorModel {
         rebuildTask?.cancel()
         rebuildTask = Task { [weak self] in
             guard let self else { return }
-            let ranges = self.recording.edit.keptRanges(duration: .infinity, applyingTrim: false)
+            let ranges = self.recording.edit.keptRanges(duration: .infinity)
             do {
                 let result = try await CompositionBuilder.build(recording: self.recording, files: self.files, ranges: ranges)
                 guard !Task.isCancelled else { return }
@@ -280,9 +286,8 @@ final class EditorModel {
         }
         drawingRedaction = nil
         selectedRedactionID = nil
-        let position = previewTimeline.outputTime(forSource: currentTime)
-        if currentTime < trimStart || position >= previewTimeline.outputTime(forSource: trimEnd) - 0.05 {
-            seek(to: trimStart)
+        if previewTimeline.outputTime(forSource: currentTime) >= previewTimeline.duration - 0.05 {
+            seek(to: videoStart)
         }
         player.play()
     }
@@ -309,7 +314,7 @@ final class EditorModel {
 
     func goToStart() {
         pauseForSeek()
-        seek(to: trimStart)
+        seek(to: videoStart)
     }
 
     /// Pauses before moving the playhead, so the pause doesn't move it back to where playback was.
@@ -318,7 +323,7 @@ final class EditorModel {
         player.pause()
     }
 
-    /// Jumps to the previous or next split or trim point.
+    /// Jumps to the previous or next split.
     func goToEditPoint(forward: Bool) {
         pauseForSeek()
         let points = recording.edit.editPoints(duration: duration)
@@ -334,56 +339,14 @@ final class EditorModel {
         return ((time * rate).rounded() / rate).clamped(to: 0...max(0, duration))
     }
 
-    // MARK: Trimming
-
-    func setTrimStart(_ value: Double) {
-        let clamped = value.clamped(to: 0...max(0, trimEnd - 0.5))
-        var edit = recording.edit
-        edit.trimStart = clamped < 0.05 ? 0 : clamped
-        guard keepsSomething(edit) else { return }
-        performEdit("Trim Start", coalescing: true) { recording.edit = edit }
-        seek(to: recording.edit.trimStart)
-    }
-
-    func setTrimEnd(_ value: Double) {
-        let clamped = value.clamped(to: min(duration, trimStart + 0.5)...max(0, duration))
-        var edit = recording.edit
-        edit.trimEnd = clamped > duration - 0.05 ? nil : clamped
-        guard keepsSomething(edit) else { return }
-        performEdit("Trim End", coalescing: true) { recording.edit = edit }
-        seek(to: clamped)
-    }
-
-    func setTrimStartAtPlayhead() {
-        var edit = recording.edit
-        edit.trimStart = snappedToFrame(currentTime)
-        guard currentTime < trimEnd - 0.5, keepsSomething(edit, explain: true) else { NSSound.beep(); return }
-        performEdit("Set Trim Start") { recording.edit = edit }
-    }
-
-    func setTrimEndAtPlayhead() {
-        let time = snappedToFrame(currentTime)
-        var edit = recording.edit
-        edit.trimEnd = time > duration - 0.05 ? nil : time
-        guard currentTime > trimStart + 0.5, keepsSomething(edit, explain: true) else { NSSound.beep(); return }
-        performEdit("Set Trim End") { recording.edit = edit }
-    }
+    // MARK: Sections
 
     /// Whether an edit leaves anything to export.
     private func keepsSomething(_ edit: EditSettings, explain: Bool = false) -> Bool {
-        guard edit.keptRanges(duration: duration, applyingTrim: true).isEmpty else { return true }
+        guard edit.keptRanges(duration: duration).isEmpty else { return true }
         if explain { showHint("At least one section has to stay in the video.") }
         return false
     }
-
-    func resetTrim() {
-        performEdit("Reset Trim") {
-            recording.edit.trimStart = 0
-            recording.edit.trimEnd = nil
-        }
-    }
-
-    // MARK: Sections
 
     /// Splits the section under the playhead at the playhead.
     func splitAtPlayhead() {
@@ -593,6 +556,7 @@ final class EditorModel {
 
     /// Starts dragging out a new area to blur or pixelate in the preview.
     func beginRedaction(_ style: RedactionStyle) {
+        finishCropping()
         guard canRedact else {
             NSSound.beep()
             showHint(currentSection.isDeleted ? "This section is deleted." : "The screen is hidden in this section.")
@@ -696,6 +660,102 @@ final class EditorModel {
         return (section, index)
     }
 
+    // MARK: Crop
+
+    var isCropping: Bool { cropDraft != nil }
+
+    /// The crop being chosen, in pixels of the recording.
+    var cropDraftPixels: CGRect? { cropDraft?.pixelRect(in: recordingSize) }
+
+    /// The shape whose crops fill the video without bars, if the video has a fixed aspect ratio.
+    var cropAspectFillingVideo: CropAspect? { CropAspect(filling: recording.edit.layout.aspect) }
+
+    /// Starts choosing the crop (on the whole recording), or applies the crop being chosen.
+    func toggleCropping() {
+        if isCropping { finishCropping() } else { beginCropping() }
+    }
+
+    func beginCropping() {
+        guard loadState == .ready, !isCropping else { return }
+        endRedactionEditing()
+        cropDraft = recording.edit.crop ?? .full
+        inspectorTab = .layout
+        dismissHint()
+        scheduleCompositionRefresh()
+    }
+
+    /// Applies the crop being chosen, as one undo step.
+    func finishCropping() {
+        guard let draft = cropDraft else { return }
+        cropDraft = nil
+        let crop = draft.isFull ? nil : draft
+        if crop != recording.edit.crop {
+            performEdit(crop == nil ? "Reset Crop" : "Crop") { recording.edit.crop = crop }
+        } else {
+            scheduleCompositionRefresh()
+        }
+    }
+
+    /// Stops choosing the crop, leaving it as it was.
+    func cancelCropping() {
+        guard isCropping else { return }
+        cropDraft = nil
+        scheduleCompositionRefresh()
+    }
+
+    /// Moves or resizes the crop being chosen; `rect` is in pixels of the recording.
+    func setCropDraft(pixels rect: CGRect) {
+        guard isCropping else { return }
+        cropDraft = CropRect(pixels: rect, in: recordingSize)
+    }
+
+    /// Changes the crop being chosen from typed pixel values. With a locked shape, a new width or
+    /// height changes the other one too.
+    func setCropDraft(x: CGFloat? = nil, y: CGFloat? = nil, width: CGFloat? = nil, height: CGFloat? = nil) {
+        guard var rect = cropDraftPixels else { return }
+        let size = recordingSize
+        let ratio = cropAspect.ratio(source: size)
+        if let x { rect.origin.x = x }
+        if let y { rect.origin.y = y }
+        if let width {
+            rect.size.width = max(1, width)
+            if let ratio { rect.size.height = rect.width / ratio }
+        }
+        if let height {
+            rect.size.height = max(1, height)
+            if let ratio { rect.size.width = rect.height * ratio }
+        }
+        if ratio != nil {
+            // Too big for the recording: shrink both sides, keeping the shape.
+            rect.size = rect.size.scaled(min(1, size.width / rect.width, size.height / rect.height))
+        }
+        setCropDraft(pixels: rect)
+    }
+
+    /// Locks the crop being chosen to a shape, fitting it inside the current crop.
+    func setCropAspect(_ aspect: CropAspect) {
+        cropAspect = aspect
+        guard let draft = cropDraft, let ratio = aspect.ratio(source: recordingSize) else { return }
+        let size = recordingSize
+        let pixels = CGRect(x: draft.x * size.width, y: draft.y * size.height,
+                            width: draft.width * size.width, height: draft.height * size.height)
+        setCropDraft(pixels: CropRect.conforming(pixels, to: ratio, in: size))
+    }
+
+    /// Makes the crop being chosen the whole recording again.
+    func resetCropDraft() {
+        guard isCropping else { return }
+        cropAspect = .free
+        cropDraft = .full
+    }
+
+    /// Shows the whole recording again.
+    func resetCrop() {
+        cancelCropping()
+        guard recording.edit.crop != nil else { return }
+        performEdit("Reset Crop") { recording.edit.crop = nil }
+    }
+
     // MARK: Silences
 
     enum SilenceAnalysis: Equatable {
@@ -740,7 +800,7 @@ final class EditorModel {
     var silencePauses: [Range<Double>] {
         guard case .ready(let levels) = silenceAnalysis else { return [] }
         let key = PauseCacheKey(settings: silenceSettings, threshold: silenceThreshold,
-                                kept: recording.edit.keptRanges(duration: duration, applyingTrim: true),
+                                kept: recording.edit.keptRanges(duration: duration),
                                 decibelCount: levels.decibels.count)
         if let pauseCache, pauseCache.key == key { return pauseCache.pauses }
         let found = levels.pauses(threshold: key.threshold, minimumDuration: silenceSettings.minimumDuration,
@@ -849,6 +909,12 @@ final class EditorModel {
 
     // MARK: Undo
 
+    /// Applies the crop being chosen, then opens the export options.
+    func showExportSheet() {
+        finishCropping()
+        isExportSheetPresented = true
+    }
+
     /// Takes a change made elsewhere (by the command line tool) as one undo step.
     func applyEdit(_ updated: Recording, actionName: String) {
         performEdit(actionName) { recording = updated }
@@ -936,13 +1002,15 @@ final class EditorModel {
     private func recordingChanged(from old: Recording) {
         registerUndo(from: old)
         if drawingRedaction != nil, !canRedact { endRedactionEditing() }
+        // The crop changed underneath the one being chosen (undo, or the command line tool).
+        if isCropping, old.edit.crop != recording.edit.crop { cancelCropping() }
         let edit = recording.edit
-        let rangesChanged = old.edit.keptRanges(duration: .infinity, applyingTrim: false)
-            != edit.keptRanges(duration: .infinity, applyingTrim: false)
+        let rangesChanged = old.edit.keptRanges(duration: .infinity) != edit.keptRanges(duration: .infinity)
         if rangesChanged, loadState == .ready {
             scheduleRebuild()
         } else {
             let visualChanged = old.edit.layout != edit.layout
+                || old.edit.crop != edit.crop
                 || old.edit.camera != edit.camera
                 || old.edit.subtitles != edit.subtitles
                 || old.edit.sections != edit.sections
@@ -951,15 +1019,8 @@ final class EditorModel {
             if old.edit.audio != edit.audio || old.edit.sections != edit.sections, let built {
                 playerItem?.audioMix = CompositionBuilder.audioMix(for: built, edit: edit)
             }
-            if old.edit.trimStart != edit.trimStart || old.edit.trimEnd != edit.trimEnd, let playerItem {
-                applyPlaybackRange(to: playerItem)
-            }
         }
         scheduleSave()
-    }
-
-    private func applyPlaybackRange(to item: AVPlayerItem) {
-        item.forwardPlaybackEndTime = recording.edit.trimEnd.map { previewTimeline.outputTime(forSource: $0).cmTime } ?? .invalid
     }
 
     private func scheduleCompositionRefresh() {
@@ -978,7 +1039,7 @@ final class EditorModel {
     private func makePreviewComposition() -> AVVideoComposition? {
         guard let built else { return nil }
         return CompositionBuilder.videoComposition(for: built, recording: recording, renderSize: previewRenderSize,
-                                                   highQuality: false)
+                                                   highQuality: false, layer: isCropping ? .fullScreen : .composed)
     }
 
     private func scheduleSave() {
@@ -1120,6 +1181,7 @@ final class EditorModel {
     // MARK: Lifecycle
 
     func close() {
+        finishCropping()
         player.pause()
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
@@ -1141,9 +1203,7 @@ final class EditorModel {
         let size = canvas.scaled(min(1, 640 / max(canvas.width, canvas.height))).evenRounded()
         let composition = CompositionBuilder.videoComposition(for: built, recording: recording, renderSize: size,
                                                               highQuality: false)
-        let start = built.timeline.outputTime(forSource: trimStart)
-        let end = built.timeline.outputTime(forSource: trimEnd)
-        let time = min(start + 1, (start + end) / 2)
+        let time = min(1, built.timeline.duration / 2)
         if let image = await Thumbnailer.image(from: built.composition, at: time, maxSize: size, videoComposition: composition) {
             Thumbnailer.writeJPEG(image, to: files.thumbnail)
             library.thumbnailDidChange(recording.id)

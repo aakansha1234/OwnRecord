@@ -78,7 +78,7 @@ enum IMovieExporter {
         // The separate clips need camera footage in the edit; without it, the finished video is what you see.
         var separate: (built: CompositionBuilder.Result, cameraSize: CGSize)?
         if clips != .finished {
-            let ranges = recording.edit.keptRanges(duration: .infinity, applyingTrim: true)
+            let ranges = recording.edit.keptRanges(duration: .infinity)
             let built = try await CompositionBuilder.build(recording: recording, files: files, ranges: ranges)
             if built.cameraTrackID != nil, let size = try await cameraSize(files) {
                 separate = (built, size)
@@ -108,10 +108,10 @@ enum IMovieExporter {
         let screenURL = folder.appendingPathComponent("\(name) – Screen.mov")
         started.append(screenURL)
         try? FileManager.default.removeItem(at: screenURL)
+        let screenSize = screenClipSize(source: built.sourceSize, edit: recording.edit, options: options)
         try await VideoExporter.writeMovie(
             built.composition,
-            videoComposition: CompositionBuilder.videoComposition(for: built, recording: recording,
-                                                                  renderSize: screenClipSize(source: built.sourceSize, options: options),
+            videoComposition: CompositionBuilder.videoComposition(for: built, recording: recording, renderSize: screenSize,
                                                                   highQuality: true, layer: .screen),
             audioMix: CompositionBuilder.audioMix(for: built, edit: recording.edit),
             codec: movie.codec, fileType: .mov, to: screenURL, progress: reporter(1))
@@ -135,9 +135,9 @@ enum IMovieExporter {
         return exported
     }
 
-    /// Size of the screen clip: the recording's own shape, at the chosen resolution.
-    static func screenClipSize(source: CGSize, options: ExportOptions) -> CGSize {
-        VideoExporter.renderSize(canvas: source.evenRounded(), options: options.movieOptions)
+    /// Size of the screen clip: the cropped recording's own shape, at the chosen resolution.
+    static func screenClipSize(source: CGSize, edit: EditSettings, options: ExportOptions) -> CGSize {
+        VideoExporter.renderSize(canvas: edit.screenCrop(in: source).size.evenRounded(), options: options.movieOptions)
     }
 
     private static func cameraSize(_ files: RecordingFiles) async throws -> CGSize? {

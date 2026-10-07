@@ -150,13 +150,14 @@ enum MainMenu {
         cameraMenu.addItem(EditorCommand.cameraEverywhere.menuItem())
         timelineMenu.addItem(submenu: cameraMenu, title: "Move Camera")
         timelineMenu.addItem(.separator())
-        for command: EditorCommand in [.blurArea, .pixelateArea, .cancelEditing] {
+        for command: EditorCommand in [.crop, .blurArea, .pixelateArea, .cancelEditing] {
             timelineMenu.addItem(command.menuItem())
         }
-        timelineMenu.addItem(.separator())
-        for command: EditorCommand in [.trimStart, .trimEnd, .resetTrim] {
-            timelineMenu.addItem(command.menuItem())
-        }
+        // Return applies the crop; the menu item is only there for its shortcut.
+        let applyCrop = EditorCommand.applyCrop.menuItem()
+        applyCrop.isHidden = true
+        applyCrop.allowsKeyEquivalentWhenHidden = true
+        timelineMenu.addItem(applyCrop)
         main.addItem(submenu: timelineMenu, title: "Timeline")
 
         let playbackMenu = NSMenu(title: "Playback")

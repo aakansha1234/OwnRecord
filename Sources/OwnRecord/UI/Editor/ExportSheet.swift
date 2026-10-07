@@ -96,7 +96,7 @@ struct ExportSheet: View {
 
     private func size(for options: ExportOptions) -> CGSize {
         if showsScreenClipSize {
-            return IMovieExporter.screenClipSize(source: model.sourceSize, options: options)
+            return IMovieExporter.screenClipSize(source: model.sourceSize, edit: model.recording.edit, options: options)
         }
         return VideoExporter.renderSize(canvas: model.canvasSize, ratio: model.recording.edit.layout.aspect.ratio,
                                         options: options.movieOptions)
